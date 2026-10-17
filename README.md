@@ -2,7 +2,7 @@
 
 Ein Auto-Updater für BepInEx-Mods, der ohne Einstellungen auskommt. Beim Start des Spiels findet er die installierten Mods selbst, fragt nach neueren Versionen und ersetzt die Dateien. Es gibt keine Liste, die du pflegen musst. Er läuft unter **Windows und Linux** (auch mit Proton und auf dedizierten Servern).
 
-Der Code ist nicht auf Valheim festgelegt, getestet ist er aber nur mit Valheim.
+Der Code ist nicht auf Valheim festgelegt und plattformneutral. Getestet ist er bisher nur mit Valheim unter Linux (Steam, nativ). Unter Windows läuft derselbe Code, wurde aber noch nicht auf einem echten Windows-System geprüft.
 
 ## So funktioniert es
 
@@ -31,28 +31,79 @@ Ist das Netz weg, passiert nichts, und es wird 10 Minuten lang nicht erneut vers
 
 ## Installation
 
-Du brauchst BepInEx 5 (für Valheim: [BepInExPack_Valheim](https://thunderstore.io/c/valheim/p/denikson/BepInExPack_Valheim/)). Das Zip `BifrostUpdater-<version>.zip` gibt es auf der [Release-Seite](https://github.com/Stanni97/bifrost-updater/releases/latest).
+Der Updater ist eine einzelne Datei, `BifrostUpdater.dll`. Sie gehört in den Ordner `BepInEx/patchers/BifrostUpdater/` im Valheim-Ordner. Du brauchst nur ein installiertes **BepInEx 5** (für Valheim das Paket [BepInExPack_Valheim](https://thunderstore.io/c/valheim/p/denikson/BepInExPack_Valheim/)). Das Zip `BifrostUpdater-<version>.zip` mit der DLL gibt es auf der [Release-Seite](https://github.com/Stanni97/bifrost-updater/releases/latest).
 
-### Mod-Manager (Windows und Linux)
+Ob BepInEx schon läuft, siehst du am Ordner `BepInEx` im Spielordner und an der Datei `BepInEx/LogOutput.log` nach dem ersten Start.
 
-In [r2modman](https://thunderstore.io/c/valheim/p/ebkr/r2modman/) oder [Gale](https://thunderstore.io/c/valheim/p/Kesomannen/GaleModManager/) das Zip über **Settings → Import local mod** einbinden. Ändere nichts weiter.
+### Mit Mod-Manager (Windows und Linux)
 
-### Manuell unter Windows
+Am einfachsten mit [r2modman](https://thunderstore.io/c/valheim/p/ebkr/r2modman/) oder [Gale](https://thunderstore.io/c/valheim/p/Kesomannen/GaleModManager/). Der Manager richtet BepInEx selbst ein.
 
-`BifrostUpdater.dll` aus dem Ordner `patchers` des Zips nach `BepInEx\patchers\BifrostUpdater\` im Spielordner kopieren (Steam: Rechtsklick auf Valheim → **Verwalten** → **Lokale Dateien durchsuchen**). Spiel wie gewohnt starten.
+1. Ein Valheim-Profil anlegen. BepInExPack_Valheim wird mitinstalliert.
+2. Das Zip von der Release-Seite herunterladen und über **Settings → Import local mod** einbinden (Gale: **Import → Local mod**).
+3. Valheim über den Mod-Manager starten (r2modman: **Start modded**).
 
-### Manuell unter Linux
+### Windows, von Hand
 
-Dasselbe nach `~/.local/share/Steam/steamapps/common/Valheim/BepInEx/patchers/BifrostUpdater/` kopieren. BepInEx muss wie gewohnt eingerichtet sein (`./start_game_bepinex.sh %command%` als Startoption).
+1. Den Spielordner öffnen: in Steam Rechtsklick auf Valheim → **Verwalten** → **Lokale Dateien durchsuchen**. Hier liegt `valheim.exe`.
+2. Falls BepInEx noch fehlt: BepInExPack_Valheim herunterladen und den *Inhalt* des Ordners `BepInExPack_Valheim` aus dem Zip in den Spielordner kopieren. Danach liegen `BepInEx\`, `winhttp.dll` und `doorstop_config.ini` neben `valheim.exe`.
+3. Das Zip des Updaters entpacken und `patchers\BifrostUpdater.dll` nach `BepInEx\patchers\BifrostUpdater\` kopieren (den Ordner `BifrostUpdater` anlegen, falls er fehlt).
+4. Valheim ganz normal über Steam starten. Startoptionen sind unter Windows nicht nötig.
 
-### Proton und Server
+### Linux (native Steam-Version), von Hand
 
-- **Proton:** wie unter Windows installieren, mit der Startoption, die BepInEx ohnehin braucht.
-- **Dedizierter Server:** dieselbe Datei im `BepInEx/patchers`-Ordner des Servers. Beachte beim Server das Kapitel zu `ThirdParty = Update` unten.
+1. Den Spielordner öffnen, meist `~/.local/share/Steam/steamapps/common/Valheim`. Hier liegt `valheim.x86_64`.
+2. Falls BepInEx noch fehlt: den Inhalt des Ordners `BepInExPack_Valheim` aus dem Zip in diesen Ordner kopieren und das Startskript ausführbar machen:
+   ```bash
+   chmod +x start_game_bepinex.sh
+   ```
+3. Die Startoption setzen: in Steam Rechtsklick auf Valheim → **Eigenschaften** → **Startoptionen**:
+   ```
+   ./start_game_bepinex.sh %command%
+   ```
+4. Den Updater ablegen:
+   ```bash
+   cd ~/.local/share/Steam/steamapps/common/Valheim
+   mkdir -p BepInEx/patchers/BifrostUpdater
+   unzip -j BifrostUpdater-*.zip 'patchers/BifrostUpdater.dll' -d BepInEx/patchers/BifrostUpdater/
+   ```
+5. Valheim über Steam starten.
+
+Der Updater lädt Dateien mit `curl` oder `wget`, falls die eingebaute Verbindung des Spiels scheitert. Beide sind auf fast jeder Linux-Distribution vorhanden. Steam setzt für das Spiel eigene Bibliotheken, die die beiden Programme stören. Der Updater startet sie deshalb mit bereinigter Umgebung.
+
+### Linux mit Proton und Steam Deck
+
+Läuft Valheim über Proton (Kompatibilität in den Steam-Eigenschaften erzwungen), ist es die Windows-Version des Spiels. Installiere BepInEx und den Updater wie unter Windows (Ordner `.../steamapps/common/Valheim`) und setze die Startoption:
+
+```
+WINEDLLOVERRIDES="winhttp=n,b" %command%
+```
+
+Auf dem Steam Deck (Desktop-Modus) gilt dasselbe wie bei Linux oder Proton, je nachdem, welche Version du startest. Der Spielordner liegt dort meist unter `~/.local/share/Steam/steamapps/common/Valheim`.
+
+### Dedizierter Server
+
+Die Datei kommt auf dem Server in `BepInEx/patchers/BifrostUpdater/`. Auf dem Server solltest du `ThirdParty = Update` nicht einschalten. Die meisten Mods brauchen auf Server und Clients dieselbe Version, und ein Update im laufenden Betrieb wirkt erst beim nächsten Neustart (siehe [Konfiguration](#konfiguration)).
 
 ### Funktioniert es?
 
-In `BepInEx/LogOutput.log` stehen Zeilen mit `BifrostUpdater`, z. B. `Updating KongStrong 1.1.0.0 -> 1.2.0.0 ...` oder `Update available: ...`. Ausführlichere Meldungen kommen mit dem Log-Level Debug.
+- In `BepInEx/LogOutput.log` steht beim Start die Zeile `Loaded 1 patcher method from [BifrostUpdater ...]`.
+- Im Ordner `BepInEx/config` liegt danach `bifrost.updater.cfg` und `bifrost.updater.state`. In der State-Datei steht `lastcheck=...`, wenn die Abfrage geklappt hat. Steht dort `lastfail=...`, war das Netz nicht erreichbar (auch ein Hinweis im Log, dann nach 10 Minuten erneut versuchen).
+- Gibt es ein Update, steht im Log `Updating <Mod> ...` oder `Update available: ...`. Sind alle Mods aktuell, bleibt es still.
+- Die alte DLL einer aktualisierten Mod liegt als `<Name>.dll.old` neben der neuen.
+
+### Wieder entfernen
+
+Die Datei `BepInEx/patchers/BifrostUpdater/BifrostUpdater.dll` löschen, optional auch `bifrost.updater.cfg` und `bifrost.updater.state` in `BepInEx/config`. Schon aktualisierte Mods bleiben, wie sie sind.
+
+### Probleme
+
+| Problem | Lösung |
+| --- | --- |
+| Keine Zeile `BifrostUpdater` im Log | Die DLL liegt nicht in `BepInEx/patchers/...`, oder BepInEx startet nicht (Linux: Startoption prüfen, Windows: `winhttp.dll` neben `valheim.exe`) |
+| `Could not reach GitHub` im Log | Kein Netz, oder weder `curl` noch `wget` funktionieren. Die Meldung nennt den Grund beider Wege |
+| Mod wird nie aktualisiert | Das Release muss einen Versions-Tag wie `v1.2.0` haben und die DLL im Zip enthalten, siehe [Eigene Mods anschließen](#eigene-mods-anschließen). Die Mod muss einem vertrauten Besitzer gehören (`Trusted`), sonst meldet der Updater nur |
+| Updater ganz aus | `Enabled = false` in `bifrost.updater.cfg` |
 
 ## Konfiguration
 
