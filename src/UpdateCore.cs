@@ -294,7 +294,8 @@ namespace BifrostUpdater
                 foreach (string dll in mod.Dlls)
                 {
                     string name = Path.GetFileName(dll);
-                    ZipArchiveEntry entry = archive.Entries.FirstOrDefault(e => string.Equals(Path.GetFileName(e.FullName), name, StringComparison.OrdinalIgnoreCase));
+                    // Zips made on Windows may use backslashes; Path.GetFileName only knows them on Windows.
+                    ZipArchiveEntry entry = archive.Entries.FirstOrDefault(e => string.Equals(e.FullName.Replace('\\', '/').Split('/').Last(), name, StringComparison.OrdinalIgnoreCase));
                     byte[] bytes = entry == null ? null : ReadEntry(entry);
                     if (bytes == null || bytes.Length < 2 || bytes[0] != 'M' || bytes[1] != 'Z')
                     {

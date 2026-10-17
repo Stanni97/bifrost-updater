@@ -77,6 +77,10 @@ namespace BifrostUpdater
                 {
                     return GetWithTool(url, accept, maxBytes);
                 }
+                catch (HttpStatusException)
+                {
+                    throw;
+                }
                 catch (Exception tool)
                 {
                     throw new IOException("HttpWebRequest: " + e.Message + " | " + tool.Message);
@@ -111,31 +115,61 @@ namespace BifrostUpdater
             }
         }
 
-        /// <summary>Tries curl, then wget. Both are asked to write into a temp file.</summary>
+        private static bool IsWindows => Path.DirectorySeparatorChar == '\\';
+
+        /// <summary>Tries curl (Windows 10 ships curl.exe), then PowerShell on Windows or wget elsewhere.</summary>
         private byte[] GetWithTool(string url, string accept, int maxBytes)
         {
             int seconds = _timeoutMs / 1000;
             string curl = "--fail --silent --show-error --location --proto =https --max-redirs 5"
                           + " --max-time " + (seconds * 3) + " --connect-timeout " + seconds + " --max-filesize " + maxBytes
                           + " -A \"" + UserAgent + "\" -H \"Accept: " + accept + "\" -o \"{file}\" \"" + url + "\"";
-            string wget = "--quiet --timeout=" + seconds + " --max-redirect=5 --user-agent=\"" + UserAgent + "\""
-                          + " --header=\"Accept: " + accept + "\" -O \"{file}\" \"" + url + "\"";
             try
             {
                 return RunDownloader("curl", curl, maxBytes);
             }
+            catch (HttpStatusException)
+            {
+                throw;
+            }
             catch (Exception curlError)
             {
                 _debug("curl failed: " + curlError.Message);
+                string second = IsWindows ? "powershell" : "wget";
                 try
                 {
-                    return RunDownloader("wget", wget, maxBytes);
+                    return RunDownloader(second, IsWindows ? PowerShellArguments(url, accept, seconds) : WgetArguments(url, accept, seconds), maxBytes);
                 }
-                catch (Exception wgetError)
+                catch (HttpStatusException)
                 {
-                    throw new IOException("curl: " + curlError.Message + " | wget: " + wgetError.Message);
+                    throw;
+                }
+                catch (Exception secondError)
+                {
+                    throw new IOException("curl: " + curlError.Message + " | " + second + ": " + secondError.Message);
                 }
             }
+        }
+
+        private static string WgetArguments(string url, string accept, int seconds)
+        {
+            return "--quiet --timeout=" + seconds + " --max-redirect=5 --user-agent=\"" + UserAgent + "\""
+                   + " --header=\"Accept: " + accept + "\" -O \"{file}\" \"" + url + "\"";
+        }
+
+        /// <summary>
+        /// Windows PowerShell (5.1 on every Windows 10/11, 3.0+ on Windows 7/8) with TLS 1.2 switched on.
+        /// Everything inside the script uses single quotes, so the command line needs no escaping.
+        /// </summary>
+        private static string PowerShellArguments(string url, string accept, int seconds)
+        {
+            string script = "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; "
+                            + "try { [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; "
+                            + "Invoke-WebRequest -UseBasicParsing -Uri '" + url.Replace("'", "''") + "' "
+                            + "-Headers @{Accept='" + accept.Replace("'", "''") + "'} -UserAgent '" + UserAgent + "' "
+                            + "-OutFile '{psfile}' -TimeoutSec " + seconds * 3 + " -MaximumRedirection 5 } "
+                            + "catch { [Console]::Error.WriteLine($_.Exception.Message); if ($_.Exception.Response) { exit 2 } else { exit 1 } }";
+            return "-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"" + script + "\"";
         }
 
         private byte[] RunDownloader(string tool, string arguments, int maxBytes)
@@ -143,7 +177,7 @@ namespace BifrostUpdater
             string file = Path.GetTempFileName();
             try
             {
-                var start = new ProcessStartInfo(tool, arguments.Replace("{file}", file))
+                var start = new ProcessStartInfo(tool, arguments.Replace("{file}", file).Replace("{psfile}", file.Replace("'", "''")))
                 {
                     UseShellExecute = false,
                     CreateNoWindow = true,
@@ -155,7 +189,17 @@ namespace BifrostUpdater
                 start.EnvironmentVariables.Remove("LD_LIBRARY_PATH");
                 start.EnvironmentVariables.Remove("LD_PRELOAD");
 
-                using (Process process = Process.Start(start))
+                Process started;
+                try
+                {
+                    started = Process.Start(start);
+                }
+                catch (System.ComponentModel.Win32Exception)
+                {
+                    throw new IOException(tool + " is not installed");
+                }
+
+                using (Process process = started)
                 {
                     string error = process.StandardError.ReadToEnd();
                     if (!process.WaitForExit(_timeoutMs * 4) || process.ExitCode != 0)
@@ -169,11 +213,24 @@ namespace BifrostUpdater
                             // already gone
                         }
 
-                        throw new IOException(error.Trim().Length > 0 ? error.Trim() : tool + " failed");
+                        string reason = error.Trim().Length > 0 ? error.Trim() : tool + " failed";
+                        // The server answered with an error (curl 22, wget 8, the PowerShell script's 2): the connection works.
+                        if (process.HasExited && ((tool == "curl" && process.ExitCode == 22) || (tool == "wget" && process.ExitCode == 8) || (tool == "powershell" && process.ExitCode == 2)))
+                        {
+                            throw new HttpStatusException(0, reason);
+                        }
+
+                        throw new IOException(reason);
                     }
                 }
 
-                if (new FileInfo(file).Length > maxBytes)
+                long size = new FileInfo(file).Length;
+                if (size == 0)
+                {
+                    throw new IOException(tool + " returned no data");
+                }
+
+                if (size > maxBytes)
                 {
                     throw new IOException("Download is larger than " + maxBytes + " bytes.");
                 }

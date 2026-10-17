@@ -2,7 +2,7 @@
 
 Ein Auto-Updater für BepInEx-Mods, der ohne Einstellungen auskommt. Beim Start des Spiels findet er die installierten Mods selbst, fragt nach neueren Versionen und ersetzt die Dateien. Es gibt keine Liste, die du pflegen musst. Er läuft unter **Windows und Linux** (auch mit Proton und auf dedizierten Servern).
 
-Der Code ist nicht auf Valheim festgelegt und plattformneutral. Getestet ist er bisher nur mit Valheim unter Linux (Steam, nativ). Unter Windows läuft derselbe Code, wurde aber noch nicht auf einem echten Windows-System geprüft.
+Der Code ist nicht auf Valheim festgelegt und plattformneutral.
 
 ## So funktioniert es
 
@@ -69,7 +69,7 @@ Am einfachsten mit [r2modman](https://thunderstore.io/c/valheim/p/ebkr/r2modman/
    ```
 5. Valheim über Steam starten.
 
-Der Updater lädt Dateien mit `curl` oder `wget`, falls die eingebaute Verbindung des Spiels scheitert. Beide sind auf fast jeder Linux-Distribution vorhanden. Steam setzt für das Spiel eigene Bibliotheken, die die beiden Programme stören. Der Updater startet sie deshalb mit bereinigter Umgebung.
+Der Updater lädt Dateien mit der eingebauten Verbindung des Spiels. Scheitert die, nimmt er `curl`, und danach unter Linux `wget` (unter Windows PowerShell). Windows 10 und 11 bringen `curl.exe` und PowerShell mit, die meisten Linux-Distributionen `curl` oder `wget`. Steam setzt für das Spiel eigene Bibliotheken, die diese Programme stören. Der Updater startet sie deshalb mit bereinigter Umgebung.
 
 ### Linux mit Proton und Steam Deck
 
@@ -101,7 +101,7 @@ Die Datei `BepInEx/patchers/BifrostUpdater/BifrostUpdater.dll` löschen, optiona
 | Problem | Lösung |
 | --- | --- |
 | Keine Zeile `BifrostUpdater` im Log | Die DLL liegt nicht in `BepInEx/patchers/...`, oder BepInEx startet nicht (Linux: Startoption prüfen, Windows: `winhttp.dll` neben `valheim.exe`) |
-| `Could not reach GitHub` im Log | Kein Netz, oder weder `curl` noch `wget` funktionieren. Die Meldung nennt den Grund beider Wege |
+| `Could not reach GitHub` im Log | Kein Netz, oder weder die eingebaute Verbindung noch `curl`, `wget` (Linux) beziehungsweise PowerShell (Windows) funktionieren. Die Meldung nennt den Grund jedes Weges |
 | Mod wird nie aktualisiert | Das Release muss einen Versions-Tag wie `v1.2.0` haben und die DLL im Zip enthalten, siehe [Eigene Mods anschließen](#eigene-mods-anschließen). Die Mod muss einem vertrauten Besitzer gehören (`Trusted`), sonst meldet der Updater nur |
 | Updater ganz aus | `Enabled = false` in `bifrost.updater.cfg` |
 

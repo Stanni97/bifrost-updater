@@ -56,9 +56,9 @@ namespace BifrostUpdater
                 try
                 {
                     Directory.CreateDirectory(Path.GetDirectoryName(path));
-                    File.WriteAllText(path, Header
+                    File.WriteAllText(path, (Header
                         + "Enabled = true\nCheckIntervalHours = 6\nTimeoutSeconds = 6\nTrusted = " + string.Join(", ", settings.Trusted.ToArray()) + "\n"
-                        + "ThirdParty = Notify\nRequireChecksum = true\nDisable =\n");
+                        + "ThirdParty = Notify\nRequireChecksum = true\nDisable =\n").Replace("\n", Environment.NewLine));
                 }
                 catch (Exception e)
                 {
