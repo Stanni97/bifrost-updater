@@ -6,7 +6,7 @@ using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 
-namespace StanniUpdater
+namespace BifrostUpdater
 {
     /// <summary>
     /// Looks up the latest release of every installed mod and replaces its files if a newer version exists.
@@ -25,37 +25,53 @@ namespace StanniUpdater
         private static readonly string[] SkippedFiles = { "readme.md", "changelog.md", "icon.png", "license", "license.md", "license.txt" };
 
         private readonly string _bepInExRoot;
+        private readonly string[] _defaultTrusted;
         private readonly Action<string> _info;
         private readonly Action<string> _warn;
         private readonly Action<string> _debug;
 
-        public UpdateCore(string bepInExRoot, Action<string> info, Action<string> warn, Action<string> debug)
+        /// <param name="defaultTrusted">Owners whose mods are updated by default, normally the owner of the updater itself.</param>
+        public UpdateCore(string bepInExRoot, IEnumerable<string> defaultTrusted, Action<string> info, Action<string> warn, Action<string> debug)
         {
             _bepInExRoot = bepInExRoot;
+            _defaultTrusted = defaultTrusted.ToArray();
             _info = info;
             _warn = warn;
             _debug = debug;
         }
 
-        private string ConfigPath => Path.Combine(_bepInExRoot, "config", "stanni.updater.cfg");
-        private string StatePath => Path.Combine(_bepInExRoot, "config", "stanni.updater.state");
+        private string ConfigPath => Path.Combine(_bepInExRoot, "config", "bifrost.updater.cfg");
+        private string StatePath => Path.Combine(_bepInExRoot, "config", "bifrost.updater.state");
+
+        /// <summary>The updater was called StanniUpdater before; keep its settings.</summary>
+        private void MigrateOldFiles()
+        {
+            foreach (string suffix in new[] { "cfg", "state" })
+            {
+                try
+                {
+                    string old = Path.Combine(_bepInExRoot, "config", "stanni.updater." + suffix);
+                    string fresh = Path.Combine(_bepInExRoot, "config", "bifrost.updater." + suffix);
+                    if (File.Exists(old) && !File.Exists(fresh))
+                    {
+                        File.Move(old, fresh);
+                    }
+                }
+                catch (Exception e)
+                {
+                    _debug("Could not move the old settings: " + e.Message);
+                }
+            }
+        }
 
         /// <summary>Returns how many mods were updated.</summary>
         public int Run(bool force = false)
         {
-            Settings settings = Settings.Load(ConfigPath, _warn);
+            MigrateOldFiles();
+            Settings settings = Settings.Load(ConfigPath, _defaultTrusted, _warn);
             if (!settings.Enabled)
             {
                 _debug("Disabled in the config.");
-                return 0;
-            }
-
-            List<Candidate> mods = Discovery.Find(_bepInExRoot, _debug)
-                .Where(m => !settings.IsDisabled(m.Key, m.Label, Path.GetFileName(m.Folder)))
-                .ToList();
-            if (mods.Count == 0)
-            {
-                _debug("No updatable mods found.");
                 return 0;
             }
 
@@ -65,7 +81,28 @@ namespace StanniUpdater
                 return 0;
             }
 
+            DiscoveryResult found = Discovery.Find(_bepInExRoot, settings.Sources, _debug);
             var http = new Http(settings.TimeoutSeconds, _debug);
+            try
+            {
+                ResolveByOwner(http, settings, found);
+            }
+            catch (Exception e) when (!(e is HttpStatusException))
+            {
+                _warn("Could not reach GitHub: " + e.Message);
+                WriteState("lastfail", DateTime.UtcNow);
+                return 0;
+            }
+
+            List<Candidate> mods = found.Mods.Values
+                .Where(m => !settings.IsDisabled(m.Key, m.Label, Path.GetFileName(m.Folder)))
+                .ToList();
+            if (mods.Count == 0)
+            {
+                _debug("No updatable mods found.");
+                return 0;
+            }
+
             int updated = 0;
             bool anyAnswer = false;
             foreach (Candidate mod in mods)
@@ -99,10 +136,93 @@ namespace StanniUpdater
             return updated;
         }
 
+        /// <summary>
+        /// BepInEx plugins that name no source are matched with the repositories of the trusted GitHub users:
+        /// the repository name has to equal the DLL name or contain it (ignoring case and separators), and has to be the only one.
+        /// A wrong match is harmless: the release zip has to contain the very same DLL and its checksum has to fit.
+        /// </summary>
+        private void ResolveByOwner(Http http, Settings settings, DiscoveryResult found)
+        {
+            if (found.Unresolved.Count == 0)
+            {
+                return;
+            }
+
+            foreach (string owner in settings.Trusted.Where(t => t.Length > 0 && !t.Contains("/")))
+            {
+                List<object> repos;
+                try
+                {
+                    byte[] answer = http.Get("https://api.github.com/users/" + Uri.EscapeDataString(owner) + "/repos?type=owner&per_page=100", "application/vnd.github+json", 2 * MaxApiBytes);
+                    repos = Json.Parse(Encoding.UTF8.GetString(answer)) as List<object>;
+                }
+                catch (HttpStatusException)
+                {
+                    continue;   // not a GitHub user, e.g. a Thunderstore team
+                }
+
+                var names = new List<string>();
+                foreach (object repo in repos ?? new List<object>())
+                {
+                    string name = Json.Str(repo, "name");
+                    bool skip = (Json.Get(repo, "archived") as bool?) == true || (Json.Get(repo, "fork") as bool?) == true;
+                    if (name != null && !skip)
+                    {
+                        names.Add(name);
+                    }
+                }
+
+                foreach (string dll in found.Unresolved.ToList())
+                {
+                    string match = MatchRepo(Path.GetFileNameWithoutExtension(dll), names);
+                    if (match == null)
+                    {
+                        continue;
+                    }
+
+                    _debug(Path.GetFileName(dll) + " matches " + owner + "/" + match + ".");
+                    Discovery.AddGitHub(found.Mods, owner + "/" + match, dll);
+                    found.Unresolved.Remove(dll);
+                }
+            }
+
+            foreach (string dll in found.Unresolved)
+            {
+                _debug(Path.GetFileName(dll) + ": no update source found.");
+            }
+        }
+
+        internal static string MatchRepo(string dllName, List<string> repoNames)
+        {
+            string target = Normalize(dllName);
+            if (target.Length == 0)
+            {
+                return null;
+            }
+
+            string exact = repoNames.FirstOrDefault(r => Normalize(r) == target);
+            if (exact != null)
+            {
+                return exact;
+            }
+
+            List<string> near = repoNames.Where(r =>
+            {
+                string n = Normalize(r);
+                return (target.Length >= 5 && n.Contains(target)) || (n.Length >= 5 && target.Contains(n));
+            }).ToList();
+            return near.Count == 1 ? near[0] : null;
+        }
+
+        private static string Normalize(string name)
+        {
+            return new string(name.Where(char.IsLetterOrDigit).Select(char.ToLowerInvariant).ToArray());
+        }
+
         /// <summary>Returns true if the mod was updated.</summary>
         private bool Check(Http http, Settings settings, Candidate mod)
         {
-            ThirdPartyMode mode = settings.IsTrusted(mod.Owner) ? ThirdPartyMode.Update : settings.ThirdParty;
+            ThirdPartyMode mode = settings.IsTrusted(mod) ? ThirdPartyMode.Update : settings.ThirdParty;
             if (mode == ThirdPartyMode.Off)
             {
                 _debug(mod.Key + ": not from a trusted owner and ThirdParty = Off.");

@@ -3,7 +3,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Net;
 
-namespace StanniUpdater
+namespace BifrostUpdater
 {
     /// <summary>
     /// Downloads with HttpWebRequest and falls back to the curl of the system. The Mono build inside
@@ -22,7 +22,7 @@ namespace StanniUpdater
 
     internal sealed class Http
     {
-        private const string UserAgent = "StanniUpdater";
+        private const string UserAgent = "BifrostUpdater";
 
         private readonly int _timeoutMs;
         private readonly Action<string> _debug;

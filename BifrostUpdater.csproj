@@ -1,9 +1,9 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <AssemblyName>StanniUpdater</AssemblyName>
-    <RootNamespace>StanniUpdater</RootNamespace>
-    <!-- The updater compares this against the latest GitHub release of Stanni97/stanni-updater. -->
+    <AssemblyName>BifrostUpdater</AssemblyName>
+    <RootNamespace>BifrostUpdater</RootNamespace>
+    <!-- The updater compares this against the latest GitHub release of Stanni97/bifrost-updater. -->
     <Version>1.0.0</Version>
     <TargetFramework>net462</TargetFramework>
     <LangVersion>latest</LangVersion>
@@ -18,9 +18,9 @@
     <AutomaticallyUseReferenceAssemblyPackages>false</AutomaticallyUseReferenceAssemblyPackages>
   </PropertyGroup>
 
-  <!-- StanniUpdater reads this to know where the mod's updates come from. -->
+  <!-- BifrostUpdater reads this to know where the mod's updates come from. -->
   <ItemGroup>
-    <AssemblyMetadata Include="UpdateRepo" Value="Stanni97/stanni-updater" />
+    <AssemblyMetadata Include="UpdateRepo" Value="Stanni97/bifrost-updater" />
   </ItemGroup>
 
   <!-- Default Steam install locations. Override with: dotnet build -p:ValheimDir="/path/to/Valheim" -->
@@ -56,8 +56,8 @@
 
   <!-- Copy the freshly built patcher into the game. Disable with -p:InstallToGame=false -->
   <Target Name="InstallToGame" AfterTargets="Build" Condition="'$(InstallToGame)' != 'false'">
-    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(PatchersDir)/StanniUpdater" />
-    <Message Importance="high" Text="Installed $(TargetFileName) to $(PatchersDir)/StanniUpdater" />
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(PatchersDir)/BifrostUpdater" />
+    <Message Importance="high" Text="Installed $(TargetFileName) to $(PatchersDir)/BifrostUpdater" />
   </Target>
 
   <!-- Release builds also produce a zip for dist/ (manifest.json for Thunderstore style mod managers). -->
@@ -66,10 +66,10 @@
       <PackageDir>$(BaseIntermediateOutputPath)package</PackageDir>
       <ManifestJson>
 {
-  "name": "StanniUpdater",
+  "name": "BifrostUpdater",
   "version_number": "$(Version)",
-  "website_url": "https://github.com/Stanni97/stanni-updater",
-  "description": "Updates the BepInEx mods by Stanni97 from their latest GitHub release when Valheim starts.",
+  "website_url": "https://github.com/Stanni97/bifrost-updater",
+  "description": "Finds the installed BepInEx mods by itself and updates them from GitHub releases or Thunderstore when the game starts. Windows and Linux, no setup.",
   "dependencies": [
     "denikson-BepInExPack_Valheim-5.4.2333"
   ]
@@ -81,8 +81,8 @@
     <Copy SourceFiles="README.md;CHANGELOG.md;LICENSE" DestinationFolder="$(PackageDir)" />
     <WriteLinesToFile File="$(PackageDir)/manifest.json" Lines="$(ManifestJson.Trim())" Overwrite="true" />
     <MakeDir Directories="dist" />
-    <ZipDirectory SourceDirectory="$(PackageDir)" DestinationFile="dist/StanniUpdater-$(Version).zip" Overwrite="true" />
-    <Message Importance="high" Text="Packaged dist/StanniUpdater-$(Version).zip" />
+    <ZipDirectory SourceDirectory="$(PackageDir)" DestinationFile="dist/BifrostUpdater-$(Version).zip" Overwrite="true" />
+    <Message Importance="high" Text="Packaged dist/BifrostUpdater-$(Version).zip" />
   </Target>
 
 </Project>

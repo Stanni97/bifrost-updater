@@ -5,7 +5,7 @@ using System.Linq;
 using System.Reflection;
 using Mono.Cecil;
 
-namespace StanniUpdater
+namespace BifrostUpdater
 {
     internal enum SourceKind
     {
@@ -28,25 +28,34 @@ namespace StanniUpdater
         public string Key => Kind == SourceKind.GitHub ? Repo : Namespace + "-" + Package;
     }
 
+    internal sealed class DiscoveryResult
+    {
+        public Dictionary<string, Candidate> Mods = new Dictionary<string, Candidate>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>BepInEx plugins that say nothing about where they come from.</summary>
+        public List<string> Unresolved = new List<string>();
+    }
+
     /// <summary>
-    /// Finds the installed mods without any list to maintain:
-    /// 1. A DLL can name its own repository with [assembly: AssemblyMetadata("UpdateRepo", "Owner/Repo")].
-    /// 2. Mods installed from Thunderstore have a manifest.json and sit in a folder called Namespace-Name.
+    /// Finds the installed mods without any list to maintain. The source of a mod is, in this order:
+    /// 1. a Mod line in the config,
+    /// 2. the repository the DLL names itself: [assembly: AssemblyMetadata("UpdateRepo", "Owner/Repo")],
+    /// 3. the manifest.json of a Thunderstore install (folder Namespace-Name),
+    /// 4. for plugins without any of these, a repository of a trusted GitHub user that matches the DLL (see UpdateCore).
     /// </summary>
     internal static class Discovery
     {
-        // Mods released before they carried the metadata.
-        private static readonly Dictionary<string, string> Legacy = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-        {
-            { "KongStrong.dll", "Stanni97/valheim-kong-strong" },
-            { "VerlerLeben.dll", "Stanni97/verler-leben" },
-        };
-
         private const long MaxScanBytes = 30L * 1024 * 1024;
 
-        public static List<Candidate> Find(string bepInExRoot, Action<string> debug)
+        private struct DllInfo
         {
-            var found = new Dictionary<string, Candidate>(StringComparer.OrdinalIgnoreCase);
+            public string UpdateRepo;
+            public bool IsPlugin;
+        }
+
+        public static DiscoveryResult Find(string bepInExRoot, IDictionary<string, string> sources, Action<string> debug)
+        {
+            var result = new DiscoveryResult();
             foreach (string rootName in new[] { "plugins", "patchers" })
             {
                 string root = Path.Combine(bepInExRoot, rootName);
@@ -57,45 +66,67 @@ namespace StanniUpdater
 
                 foreach (string folder in Directory.GetDirectories(root))
                 {
-                    Candidate bySource = null;
+                    var unresolved = new List<string>();
+                    bool resolved = false;
                     foreach (string dll in Directory.GetFiles(folder, "*.dll", SearchOption.AllDirectories))
                     {
-                        Candidate github = FromDll(dll, found);
-                        bySource = bySource ?? github;
+                        resolved |= Add(dll, result.Mods, sources, unresolved);
                     }
 
-                    if (bySource == null)
+                    if (resolved)
                     {
-                        Candidate store = FromManifest(folder, debug);
-                        if (store != null)
-                        {
-                            found[store.Key] = store;
-                        }
+                        continue;
+                    }
+
+                    Candidate store = FromManifest(folder, debug);
+                    if (store != null)
+                    {
+                        result.Mods[store.Key] = store;
+                    }
+                    else
+                    {
+                        result.Unresolved.AddRange(unresolved);
                     }
                 }
 
                 foreach (string dll in Directory.GetFiles(root, "*.dll", SearchOption.TopDirectoryOnly))
                 {
-                    FromDll(dll, found);
+                    var unresolved = new List<string>();
+                    if (!Add(dll, result.Mods, sources, unresolved))
+                    {
+                        result.Unresolved.AddRange(unresolved);
+                    }
                 }
             }
 
-            return found.Values.ToList();
+            return result;
         }
 
-        private static Candidate FromDll(string dll, Dictionary<string, Candidate> found)
+        /// <summary>Registers the DLL if its source is known; otherwise remembers it if it is a plugin.</summary>
+        private static bool Add(string dll, Dictionary<string, Candidate> found, IDictionary<string, string> sources, List<string> unresolved)
         {
-            string repo = ReadUpdateRepo(dll);
-            if (repo == null)
+            DllInfo info = Inspect(dll);
+            if (!sources.TryGetValue(Path.GetFileName(dll), out string repo))
             {
-                Legacy.TryGetValue(Path.GetFileName(dll), out repo);
+                repo = info.UpdateRepo;
             }
 
             if (repo == null || repo.Split('/').Length != 2 || repo.Contains(" "))
             {
-                return null;
+                if (info.IsPlugin)
+                {
+                    unresolved.Add(dll);
+                }
+
+                return false;
             }
 
+            AddGitHub(found, repo, dll);
+            return true;
+        }
+
+        public static void AddGitHub(Dictionary<string, Candidate> found, string repo, string dll)
+        {
             if (!found.TryGetValue(repo, out Candidate candidate))
             {
                 candidate = new Candidate { Kind = SourceKind.GitHub, Repo = repo, Label = Path.GetFileNameWithoutExtension(dll), Folder = Path.GetDirectoryName(dll) };
@@ -108,8 +139,6 @@ namespace StanniUpdater
             {
                 candidate.Installed = version;
             }
-
-            return candidate;
         }
 
         private static Candidate FromManifest(string folder, Action<string> debug)
@@ -156,14 +185,15 @@ namespace StanniUpdater
             }
         }
 
-        /// <summary>Reads [assembly: AssemblyMetadata("UpdateRepo", ...)] without loading the DLL into the game.</summary>
-        private static string ReadUpdateRepo(string dll)
+        /// <summary>Reads the DLL's attributes without loading it into the game.</summary>
+        private static DllInfo Inspect(string dll)
         {
+            var info = new DllInfo();
             try
             {
                 if (new FileInfo(dll).Length > MaxScanBytes)
                 {
-                    return null;
+                    return info;
                 }
 
                 using (AssemblyDefinition assembly = AssemblyDefinition.ReadAssembly(dll))
@@ -174,9 +204,12 @@ namespace StanniUpdater
                             && attribute.ConstructorArguments.Count == 2
                             && attribute.ConstructorArguments[0].Value as string == "UpdateRepo")
                         {
-                            return attribute.ConstructorArguments[1].Value as string;
+                            info.UpdateRepo = attribute.ConstructorArguments[1].Value as string;
                         }
                     }
+
+                    // The BepInPlugin attribute sits on the plugin class, not on the assembly.
+                    info.IsPlugin = assembly.MainModule.Types.Any(t => t.CustomAttributes.Any(a => a.AttributeType.FullName == "BepInEx.BepInPlugin"));
                 }
             }
             catch (Exception)
@@ -184,7 +217,7 @@ namespace StanniUpdater
                 // not a managed DLL, or unreadable
             }
 
-            return null;
+            return info;
         }
 
         internal static Version ReadVersion(string path)

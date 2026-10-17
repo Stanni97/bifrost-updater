@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
 
-namespace StanniUpdater
+namespace BifrostUpdater
 {
     /// <summary>
     /// Tiny JSON reader for the GitHub API answers. Objects become Dictionary&lt;string, object&gt;,
@@ -46,7 +46,7 @@ namespace StanniUpdater
             return n is double d ? d : 0;
         }
 
-        private static object Get(object value, string key)
+        public static object Get(object value, string key)
         {
             var map = value as Dictionary<string, object>;
             return map != null && map.TryGetValue(key, out object result) ? result : null;
