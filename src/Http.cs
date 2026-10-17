@@ -73,9 +73,15 @@ namespace BifrostUpdater
             catch (Exception e)
             {
                 _debug("HttpWebRequest failed (" + e.GetType().Name + ": " + e.Message + "), trying curl.");
+                try
+                {
+                    return GetWithTool(url, accept, maxBytes);
+                }
+                catch (Exception tool)
+                {
+                    throw new IOException("HttpWebRequest: " + e.Message + " | " + tool.Message);
+                }
             }
-
-            return GetWithCurl(url, accept, maxBytes);
         }
 
         private byte[] GetWithWebRequest(string url, string accept, int maxBytes)
@@ -105,22 +111,49 @@ namespace BifrostUpdater
             }
         }
 
-        private byte[] GetWithCurl(string url, string accept, int maxBytes)
+        /// <summary>Tries curl, then wget. Both are asked to write into a temp file.</summary>
+        private byte[] GetWithTool(string url, string accept, int maxBytes)
+        {
+            int seconds = _timeoutMs / 1000;
+            string curl = "--fail --silent --show-error --location --proto =https --max-redirs 5"
+                          + " --max-time " + (seconds * 3) + " --connect-timeout " + seconds + " --max-filesize " + maxBytes
+                          + " -A \"" + UserAgent + "\" -H \"Accept: " + accept + "\" -o \"{file}\" \"" + url + "\"";
+            string wget = "--quiet --timeout=" + seconds + " --max-redirect=5 --user-agent=\"" + UserAgent + "\""
+                          + " --header=\"Accept: " + accept + "\" -O \"{file}\" \"" + url + "\"";
+            try
+            {
+                return RunDownloader("curl", curl, maxBytes);
+            }
+            catch (Exception curlError)
+            {
+                _debug("curl failed: " + curlError.Message);
+                try
+                {
+                    return RunDownloader("wget", wget, maxBytes);
+                }
+                catch (Exception wgetError)
+                {
+                    throw new IOException("curl: " + curlError.Message + " | wget: " + wgetError.Message);
+                }
+            }
+        }
+
+        private byte[] RunDownloader(string tool, string arguments, int maxBytes)
         {
             string file = Path.GetTempFileName();
             try
             {
-                string args = "--fail --silent --show-error --location --proto =https --max-redirs 5"
-                              + " --max-time " + (_timeoutMs / 1000 * 3) + " --connect-timeout " + (_timeoutMs / 1000)
-                              + " --max-filesize " + maxBytes
-                              + " -A \"" + UserAgent + "\" -H \"Accept: " + accept + "\""
-                              + " -o \"" + file + "\" \"" + url + "\"";
-                var start = new ProcessStartInfo("curl", args)
+                var start = new ProcessStartInfo(tool, arguments.Replace("{file}", file))
                 {
                     UseShellExecute = false,
                     CreateNoWindow = true,
                     RedirectStandardError = true,
                 };
+
+                // Steam starts the game with its own runtime libraries in these variables. The system's curl and wget
+                // cannot load them ("version CURL_OPENSSL_4 not found"), so the tool gets a clean environment.
+                start.EnvironmentVariables.Remove("LD_LIBRARY_PATH");
+                start.EnvironmentVariables.Remove("LD_PRELOAD");
 
                 using (Process process = Process.Start(start))
                 {
@@ -136,8 +169,13 @@ namespace BifrostUpdater
                             // already gone
                         }
 
-                        throw new IOException("curl failed: " + error.Trim());
+                        throw new IOException(error.Trim().Length > 0 ? error.Trim() : tool + " failed");
                     }
+                }
+
+                if (new FileInfo(file).Length > maxBytes)
+                {
+                    throw new IOException("Download is larger than " + maxBytes + " bytes.");
                 }
 
                 return File.ReadAllBytes(file);

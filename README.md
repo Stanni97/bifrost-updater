@@ -27,7 +27,7 @@ Standardmäßig vertraut er dem Besitzer, der in seiner eigenen DLL als Quelle s
 4. Bei GitHub muss die SHA-256-Prüfsumme des Downloads zu GitHubs Angabe passen. Aus dem Zip werden nur die DLLs übernommen, die die Mod schon hat. Bei Thunderstore-Paketen werden die Dateien des Mod-Ordners ersetzt, nichts außerhalb davon.
 5. Von jeder ersetzten DLL bleibt die alte als `<Name>.dll.old` liegen, falls du zurückwillst.
 
-Ist das Netz weg, passiert nichts, und es wird 30 Minuten lang nicht erneut versucht. Ein Problem im Updater hält das Spiel nie vom Starten ab. Der Updater aktualisiert auch sich selbst, diese Version wird aber erst beim nächsten Start aktiv.
+Ist das Netz weg, passiert nichts, und es wird 10 Minuten lang nicht erneut versucht. Ein Problem im Updater hält das Spiel nie vom Starten ab. Der Updater aktualisiert auch sich selbst, diese Version wird aber erst beim nächsten Start aktiv.
 
 ## Installation
 

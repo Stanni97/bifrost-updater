@@ -18,7 +18,7 @@ namespace BifrostUpdater
         private const int MaxGitHubZipBytes = 25 * 1024 * 1024;
         private const int MaxStoreZipBytes = 100 * 1024 * 1024;
         private const int MaxFileBytes = 60 * 1024 * 1024;
-        private const int OfflineBackoffMinutes = 30;
+        private const int OfflineBackoffMinutes = 10;
 
         // Parts of a Thunderstore package that are not part of the mod folder itself.
         private static readonly string[] OtherTargets = { "patchers/", "monomod/", "core/", "config/" };
