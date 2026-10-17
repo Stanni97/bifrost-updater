@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Reflection;
 using BepInEx;
 using BepInEx.Logging;
 using Mono.Cecil;
@@ -26,7 +25,6 @@ namespace StanniUpdater
             {
                 var core = new UpdateCore(
                     Paths.BepInExRootPath,
-                    Assembly.GetExecutingAssembly().Location,
                     message => log.LogInfo(message),
                     message => log.LogWarning(message),
                     message => log.LogDebug(message));

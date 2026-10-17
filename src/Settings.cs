@@ -5,52 +5,42 @@ using System.Linq;
 
 namespace StanniUpdater
 {
-    /// <summary>One mod that is kept up to date: a GitHub repository and the DLL its releases contain.</summary>
-    internal sealed class ModEntry
+    /// <summary>What happens with an update of a mod from someone else.</summary>
+    internal enum ThirdPartyMode
     {
-        public string Repo;    // Owner/Name
-        public string Dll;     // file name, e.g. KongStrong.dll
-
-        public string Owner => Repo.Split('/')[0];
+        Off,
+        Notify,
+        Update,
     }
 
     /// <summary>
-    /// Settings read from BepInEx/config/stanni.updater.cfg. The mods by Stanni97 are built in,
-    /// the file only turns the updater off, changes timing or adds further mods.
+    /// Settings read from BepInEx/config/stanni.updater.cfg. The mods are found automatically,
+    /// the file only turns the updater off or changes how careful it is.
     /// </summary>
     internal sealed class Settings
     {
-        public static readonly ModEntry[] BuiltIn =
-        {
-            new ModEntry { Repo = "Stanni97/valheim-kong-strong", Dll = "KongStrong.dll" },
-            new ModEntry { Repo = "Stanni97/verler-leben", Dll = "VerlerLeben.dll" },
-            new ModEntry { Repo = "Stanni97/stanni-updater", Dll = "StanniUpdater.dll" },
-        };
-
         public bool Enabled = true;
         public int CheckIntervalHours = 6;
         public int TimeoutSeconds = 6;
         public bool RequireChecksum = true;
-        public List<string> AllowedOwners = new List<string> { "Stanni97" };
+        public ThirdPartyMode ThirdParty = ThirdPartyMode.Notify;
+        public List<string> TrustedOwners = new List<string> { "Stanni97" };
         public List<string> Disabled = new List<string>();
-        public List<ModEntry> Extra = new List<ModEntry>();
-
-        public IEnumerable<ModEntry> Mods => BuiltIn.Concat(Extra)
-            .Where(m => !Disabled.Contains(m.Repo, StringComparer.OrdinalIgnoreCase));
 
         private const string Header =
-            "# StanniUpdater: keeps the mods by Stanni97 up to date when Valheim starts.\n" +
+            "# StanniUpdater: keeps the BepInEx mods up to date when Valheim starts.\n" +
+            "# Mods are found automatically: by the update source built into the DLL (the mods by Stanni97)\n" +
+            "# and by the manifest.json of mods installed from Thunderstore.\n" +
             "#\n" +
             "# Enabled            = false turns the updater off completely.\n" +
-            "# CheckIntervalHours = how often GitHub is asked at most (0 = at every start).\n" +
+            "# CheckIntervalHours = how often the servers are asked at most (0 = at every start).\n" +
             "# TimeoutSeconds     = how long one request may take before it is given up.\n" +
-            "# RequireChecksum    = only install a download whose SHA-256 matches the one GitHub lists for it.\n" +
-            "# AllowedOwners      = only repositories of these GitHub users are ever downloaded from (comma separated).\n" +
-            "# Disable            = repositories not to update, comma separated, e.g. Stanni97/verler-leben\n" +
-            "# Mod                = one more mod as Owner/Repo:File.dll, can be repeated. It has to be installed already.\n" +
-            "#\n" +
-            "# Built in: Stanni97/valheim-kong-strong (KongStrong.dll), Stanni97/verler-leben (VerlerLeben.dll),\n" +
-            "#           Stanni97/stanni-updater (StanniUpdater.dll, takes effect on the next start)\n\n";
+            "# TrustedOwners      = GitHub users / Thunderstore teams whose mods are updated without asking, comma separated.\n" +
+            "# ThirdParty         = what happens with updates of every other mod:\n" +
+            "#                      Off = ignore them, Notify = only write them to the log, Update = install them.\n" +
+            "#                      Careful with Update in multiplayer: most mods need the same version on client and server.\n" +
+            "# RequireChecksum    = only install a GitHub download whose SHA-256 matches the one GitHub lists for it.\n" +
+            "# Disable            = mods never to touch, comma separated: folder name, Owner/Repo or Owner-Name.\n\n";
 
         public static Settings Load(string path, Action<string> warn)
         {
@@ -61,8 +51,8 @@ namespace StanniUpdater
                 {
                     Directory.CreateDirectory(Path.GetDirectoryName(path));
                     File.WriteAllText(path, Header
-                        + "Enabled = true\nCheckIntervalHours = 6\nTimeoutSeconds = 6\nRequireChecksum = true\n"
-                        + "AllowedOwners = Stanni97\nDisable =\n");
+                        + "Enabled = true\nCheckIntervalHours = 6\nTimeoutSeconds = 6\nTrustedOwners = Stanni97\n"
+                        + "ThirdParty = Notify\nRequireChecksum = true\nDisable =\n");
                 }
                 catch (Exception e)
                 {
@@ -89,17 +79,13 @@ namespace StanniUpdater
                     case "checkintervalhours": settings.CheckIntervalHours = ParseInt(value, 6); break;
                     case "timeoutseconds": settings.TimeoutSeconds = ParseInt(value, 6); break;
                     case "requirechecksum": settings.RequireChecksum = ParseBool(value, true); break;
-                    case "allowedowners": settings.AllowedOwners = Split(value); break;
+                    case "trustedowners": case "allowedowners": settings.TrustedOwners = Split(value); break;
                     case "disable": settings.Disabled = Split(value); break;
-                    case "mod":
-                        string[] parts = value.Split(':');
-                        if (parts.Length == 2 && parts[0].Trim().Split('/').Length == 2 && parts[1].Trim().EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
+                    case "thirdparty":
+                        if (!Enum.TryParse(value, true, out settings.ThirdParty))
                         {
-                            settings.Extra.Add(new ModEntry { Repo = parts[0].Trim(), Dll = parts[1].Trim() });
-                        }
-                        else
-                        {
-                            warn("Ignoring invalid Mod line '" + value + "', expected Owner/Repo:File.dll");
+                            warn("ThirdParty = '" + value + "' is not Off, Notify or Update, using Notify.");
+                            settings.ThirdParty = ThirdPartyMode.Notify;
                         }
 
                         break;
@@ -107,6 +93,16 @@ namespace StanniUpdater
             }
 
             return settings;
+        }
+
+        public bool IsTrusted(string owner)
+        {
+            return TrustedOwners.Contains(owner, StringComparer.OrdinalIgnoreCase);
+        }
+
+        public bool IsDisabled(params string[] names)
+        {
+            return names.Any(n => !string.IsNullOrEmpty(n) && Disabled.Contains(n, StringComparer.OrdinalIgnoreCase));
         }
 
         private static bool ParseBool(string value, bool fallback)

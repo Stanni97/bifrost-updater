@@ -1,27 +1,25 @@
 # StanniUpdater
 
-Ein kleiner Auto-Updater für die Valheim-Mods von [Stanni97](https://github.com/Stanni97). Beim Start des Spiels fragt er GitHub nach dem neuesten Release jeder installierten Mod und ersetzt die DLL, wenn es eine neuere Version gibt.
-
-Gepflegt werden zurzeit:
-
-| Mod | Repository |
-| --- | --- |
-| Kong Strong Energy | [valheim-kong-strong](https://github.com/Stanni97/valheim-kong-strong) |
-| Verler Leben | [verler-leben](https://github.com/Stanni97/verler-leben) |
-| StanniUpdater selbst | [stanni-updater](https://github.com/Stanni97/stanni-updater) |
+Ein wartungsarmer Auto-Updater für BepInEx-Mods in Valheim. Beim Start des Spiels findet er die installierten Mods selbst, fragt nach neueren Versionen und ersetzt die Dateien. Es gibt keine Liste, die du pflegen musst. Gebaut für die Mods von [Stanni97](https://github.com/Stanni97), er kann aber auch Mods von Thunderstore im Blick behalten.
 
 ## So funktioniert es
 
 Der Updater ist ein **BepInEx-Patcher**. Patcher laufen, bevor BepInEx irgendein Plugin lädt. Eine aktualisierte Mod ist deshalb schon im selben Spielstart die neue Version, und es gibt keine Probleme mit gesperrten Dateien unter Windows. Ein Update beim Schließen des Spiels wäre dagegen unsicher: Unter Windows ist die DLL dann noch gesperrt, und ein Absturz würde das Update verlieren.
 
+**Mods werden automatisch erkannt**, auf zwei Wegen:
+
+1. **Eingebaute Quelle:** Eine DLL nennt ihr eigenes Repository in den Assembly-Metadaten (`AssemblyMetadata("UpdateRepo", "Stanni97/verler-leben")`). Das ist der Weg für alle Mods von Stanni97. Die Updates kommen aus dem neuesten GitHub-Release.
+2. **Thunderstore:** Mods, die über r2modman oder Gale installiert wurden, liegen in einem Ordner `Namespace-Name` mit `manifest.json`. Daraus liest der Updater Name und Version und fragt die Thunderstore-Schnittstelle nach der neuesten Version.
+
 Pro Start passiert Folgendes:
 
-1. Für jede bekannte Mod, die installiert ist, wird `releases/latest` des Repositorys abgefragt. Ist eine Mod nicht installiert, passiert nichts. Der Updater installiert nie etwas Neues.
-2. Ist die Release-Version (Tag `v1.2.0`) höher als die der installierten DLL, wird das Zip des Releases heruntergeladen.
-3. Die SHA-256-Prüfsumme des Downloads wird mit der verglichen, die GitHub für die Datei anzeigt.
-4. Aus dem Zip wird **nur die DLL** entnommen (nichts anderes wird je auf die Platte geschrieben) und ersetzt die alte. Die alte bleibt als `<Name>.dll.old` liegen, falls du zurückwillst.
+1. Alle Mods in `BepInEx/plugins` und `BepInEx/patchers` werden erkannt. Neue Mods brauchen keine Eintragung.
+2. Pro Mod wird die neueste Version abgefragt (höchstens alle 6 Stunden, `CheckIntervalHours`).
+3. Ist sie neuer, hängt es vom Besitzer ab: Mods von **vertrauten Besitzern** (Standard: Stanni97) werden aktualisiert. Bei allen anderen schreibt der Updater nur eine Zeile ins Log (`ThirdParty = Notify`), außer du stellst `ThirdParty = Update` ein.
+4. Bei GitHub-Downloads muss die SHA-256-Prüfsumme zu GitHubs Angabe passen. Aus dem Zip werden nur die DLLs übernommen, die die Mod schon hat. Bei Thunderstore-Paketen werden die Dateien des Mod-Ordners ersetzt, nichts außerhalb davon.
+5. Von jeder ersetzten DLL bleibt die alte als `<Name>.dll.old` liegen, falls du zurückwillst.
 
-Gefragt wird höchstens alle 6 Stunden (`CheckIntervalHours`). Ist GitHub nicht erreichbar, passiert nichts, und es wird 30 Minuten lang nicht erneut versucht. Spielstart wird dadurch nie verhindert.
+Ist das Netz weg, passiert nichts, und es wird 30 Minuten lang nicht erneut versucht. Ein Problem im Updater hält das Spiel nie vom Starten ab.
 
 Der Updater aktualisiert auch sich selbst. Diese Version wird allerdings erst beim nächsten Start aktiv.
 
@@ -46,26 +44,33 @@ Nach dem ersten Start liegt die Config unter `BepInEx/config/stanni.updater.cfg`
 | `Enabled` | `false` schaltet den Updater aus |
 | `CheckIntervalHours` | Mindestabstand zwischen zwei Prüfungen, `0` = bei jedem Start |
 | `TimeoutSeconds` | Wie lange eine Anfrage dauern darf |
-| `RequireChecksum` | Nur installieren, wenn die SHA-256-Prüfsumme zu GitHubs Angabe passt (Standard `true`) |
-| `AllowedOwners` | Nur Repositories dieser GitHub-Nutzer werden angefragt, Standard `Stanni97` |
-| `Disable` | Repositories, die nicht aktualisiert werden sollen, kommagetrennt |
-| `Mod` | Eine weitere Mod als `Owner/Repo:Datei.dll`, mehrfach möglich. Die Mod muss schon installiert sein |
+| `TrustedOwners` | GitHub-Nutzer und Thunderstore-Teams, deren Mods ohne Rückfrage aktualisiert werden, Standard `Stanni97` |
+| `ThirdParty` | Was bei Updates aller anderen Mods passiert: `Off` (ignorieren), `Notify` (nur ins Log schreiben, Standard) oder `Update` (installieren) |
+| `RequireChecksum` | GitHub-Downloads nur installieren, wenn die SHA-256-Prüfsumme zu GitHubs Angabe passt (Standard `true`) |
+| `Disable` | Mods, die nie angefasst werden, kommagetrennt: Ordnername, `Owner/Repo` oder `Owner-Name` |
 
-Eine Mod pausierst du zum Beispiel mit `Disable = Stanni97/verler-leben`.
+**Vorsicht mit `ThirdParty = Update` im Multiplayer:** Die meisten Mods brauchen auf Client und Server dieselbe Version. Aktualisiert nur dein Client, kommst du nicht mehr auf den Server. Der Updater prüft auch keine Abhängigkeiten, ein Update kann also eine neuere Version von Jotunn oder BepInEx verlangen.
 
-## Damit eine Mod aktualisiert werden kann
+## Eine neue Mod anschließen
 
-- Das neueste GitHub-Release hat einen Tag wie `v1.2.0`.
-- Es enthält ein Zip, in dem die DLL der Mod liegt (egal in welchem Unterordner).
-- Die `<Version>` in der `.csproj` der Mod stimmt mit dem Tag überein. Der Updater vergleicht sie mit der Version der installierten DLL.
+Für Mods von Stanni97 reicht eine Zeile in der `.csproj`, danach ist alles automatisch:
+
+```xml
+<ItemGroup>
+  <AssemblyMetadata Include="UpdateRepo" Value="Stanni97/mein-repo" />
+</ItemGroup>
+```
+
+Damit ein Update ankommt, muss das neueste GitHub-Release einen Tag wie `v1.2.0` haben, ein Zip mit der DLL enthalten, und die `<Version>` in der `.csproj` muss zum Tag passen. Kong Strong Energy und Verler Leben in den Versionen vor dem Updater tragen die Zeile noch nicht, sie sind deshalb fest hinterlegt (nur diese zwei).
 
 ## Sicherheit
 
 Der Updater lädt Code aus dem Internet und führt ihn im Spiel aus. Deshalb gilt:
 
-- Es wird nur per HTTPS von `github.com` und `api.github.com` geladen, und die Download-Adresse muss im jeweiligen Repository liegen.
-- Es werden nur Repositories der `AllowedOwners` angefragt (Standard: nur Stanni97).
-- Die Prüfsumme muss zu GitHubs Angabe passen. Das schützt vor kaputten oder abgebrochenen Downloads. Wer Zugriff auf das GitHub-Konto hat, könnte aber Release und Prüfsumme gemeinsam austauschen. Das ist das Vertrauen, das jedes Auto-Update braucht.
+- Es wird nur per HTTPS von `github.com`, `api.github.com` und `thunderstore.io` geladen. GitHub-Downloads müssen aus dem Repository der Mod stammen.
+- Ohne Einstellung wird nur bei Mods von `TrustedOwners` automatisch aktualisiert. Fremde Mods meldet er nur.
+- Bei GitHub muss die Prüfsumme zu GitHubs Angabe passen. Das schützt vor kaputten oder abgebrochenen Downloads. Wer Zugriff auf das GitHub-Konto hat, könnte aber Release und Prüfsumme gemeinsam austauschen. Thunderstore liefert keine Prüfsumme, dort schützt nur HTTPS.
+- Pakete werden vor dem Schreiben vollständig geprüft: keine Pfade aus dem Mod-Ordner heraus, Größenlimits, mindestens eine DLL. Ein kaputtes Zip ändert nichts.
 - Wer das nicht möchte, setzt `Enabled = false` oder installiert den Updater gar nicht.
 
 ## Selbst bauen
@@ -79,8 +84,6 @@ dotnet build -c Release
 ```
 
 Das kopiert `StanniUpdater.dll` nach `BepInEx/patchers/StanniUpdater/` und legt das Zip unter `dist/` ab. Mit `-p:InstallToGame=false` wird nur gebaut, mit `-p:ValheimDir="..."` ein anderer Spielordner benutzt.
-
-Eine weitere Mod fest einbauen: in `src/Settings.cs` einen Eintrag zu `BuiltIn` hinzufügen.
 
 ## Lizenz
 

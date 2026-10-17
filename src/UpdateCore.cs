@@ -3,33 +3,35 @@ using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
-using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 
 namespace StanniUpdater
 {
     /// <summary>
-    /// Checks the latest GitHub release of every installed mod and replaces its DLL if a newer version exists.
-    /// Plain .NET only, so it can run in the BepInEx preloader and in tests.
+    /// Looks up the latest release of every installed mod and replaces its files if a newer version exists.
+    /// Plain .NET plus Mono.Cecil, so it can run in the BepInEx preloader and in tests.
     /// </summary>
     internal sealed class UpdateCore
     {
         private const int MaxApiBytes = 512 * 1024;
-        private const int MaxZipBytes = 25 * 1024 * 1024;
-        private const int MaxDllBytes = 10 * 1024 * 1024;
+        private const int MaxGitHubZipBytes = 25 * 1024 * 1024;
+        private const int MaxStoreZipBytes = 100 * 1024 * 1024;
+        private const int MaxFileBytes = 60 * 1024 * 1024;
         private const int OfflineBackoffMinutes = 30;
 
+        // Parts of a Thunderstore package that are not part of the mod folder itself.
+        private static readonly string[] OtherTargets = { "patchers/", "monomod/", "core/", "config/" };
+        private static readonly string[] SkippedFiles = { "readme.md", "changelog.md", "icon.png", "license", "license.md", "license.txt" };
+
         private readonly string _bepInExRoot;
-        private readonly string _selfDll;
         private readonly Action<string> _info;
         private readonly Action<string> _warn;
         private readonly Action<string> _debug;
 
-        public UpdateCore(string bepInExRoot, string selfDll, Action<string> info, Action<string> warn, Action<string> debug)
+        public UpdateCore(string bepInExRoot, Action<string> info, Action<string> warn, Action<string> debug)
         {
             _bepInExRoot = bepInExRoot;
-            _selfDll = selfDll;
             _info = info;
             _warn = warn;
             _debug = debug;
@@ -38,7 +40,7 @@ namespace StanniUpdater
         private string ConfigPath => Path.Combine(_bepInExRoot, "config", "stanni.updater.cfg");
         private string StatePath => Path.Combine(_bepInExRoot, "config", "stanni.updater.state");
 
-        /// <summary>Returns how many DLLs were replaced.</summary>
+        /// <summary>Returns how many mods were updated.</summary>
         public int Run(bool force = false)
         {
             Settings settings = Settings.Load(ConfigPath, _warn);
@@ -48,26 +50,12 @@ namespace StanniUpdater
                 return 0;
             }
 
-            // Only mods that are installed get updated, so skip the network if there is nothing to do.
-            var installed = new List<KeyValuePair<ModEntry, List<string>>>();
-            foreach (ModEntry mod in settings.Mods)
+            List<Candidate> mods = Discovery.Find(_bepInExRoot, _debug)
+                .Where(m => !settings.IsDisabled(m.Key, m.Label, Path.GetFileName(m.Folder)))
+                .ToList();
+            if (mods.Count == 0)
             {
-                if (!settings.AllowedOwners.Contains(mod.Owner, StringComparer.OrdinalIgnoreCase))
-                {
-                    _warn("Not checking " + mod.Repo + ": its owner is not in AllowedOwners.");
-                    continue;
-                }
-
-                List<string> files = FindInstalled(mod);
-                if (files.Count > 0)
-                {
-                    installed.Add(new KeyValuePair<ModEntry, List<string>>(mod, files));
-                }
-            }
-
-            if (installed.Count == 0)
-            {
-                _debug("None of the known mods is installed.");
+                _debug("No updatable mods found.");
                 return 0;
             }
 
@@ -80,21 +68,24 @@ namespace StanniUpdater
             var http = new Http(settings.TimeoutSeconds, _debug);
             int updated = 0;
             bool anyAnswer = false;
-            foreach (KeyValuePair<ModEntry, List<string>> pair in installed)
+            foreach (Candidate mod in mods)
             {
                 try
                 {
-                    CheckResult result = Check(http, settings, pair.Key, pair.Value);
-                    anyAnswer = true;
-                    if (result == CheckResult.Updated)
+                    if (Check(http, settings, mod))
                     {
                         updated++;
                     }
+
+                    anyAnswer = true;
                 }
                 catch (Exception e)
                 {
-                    _warn("Update check for " + pair.Key.Repo + " failed: " + e.Message);
-                    anyAnswer |= e is HttpStatusException;
+                    bool answered = e is HttpStatusException;
+                    anyAnswer |= answered;
+                    // A 404 on Thunderstore only means: this mod is not published there.
+                    Action<string> report = answered && mod.Kind == SourceKind.Thunderstore ? _debug : _warn;
+                    report("Update check for " + mod.Key + " failed: " + e.Message);
                     if (!anyAnswer)
                     {
                         // Nothing answered so far: most likely offline, do not wait for every other mod as well.
@@ -108,22 +99,27 @@ namespace StanniUpdater
             return updated;
         }
 
-        private enum CheckResult
+        /// <summary>Returns true if the mod was updated.</summary>
+        private bool Check(Http http, Settings settings, Candidate mod)
         {
-            UpToDate,
-            Skipped,
-            Updated,
-        }
-
-        private CheckResult Check(Http http, Settings settings, ModEntry mod, List<string> files)
-        {
-            Version installedVersion = files.Select(ReadVersion).Where(v => v != null).OrderBy(v => v).FirstOrDefault();
-            if (installedVersion == null)
+            ThirdPartyMode mode = settings.IsTrusted(mod.Owner) ? ThirdPartyMode.Update : settings.ThirdParty;
+            if (mode == ThirdPartyMode.Off)
             {
-                _warn(mod.Dll + ": could not read the installed version, skipping.");
-                return CheckResult.Skipped;
+                _debug(mod.Key + ": not from a trusted owner and ThirdParty = Off.");
+                return false;
             }
 
+            if (mod.Installed == null)
+            {
+                _warn(mod.Label + ": could not read the installed version, skipping.");
+                return false;
+            }
+
+            return mod.Kind == SourceKind.GitHub ? CheckGitHub(http, settings, mod, mode) : CheckThunderstore(http, mod, mode);
+        }
+
+        private bool CheckGitHub(Http http, Settings settings, Candidate mod, ThirdPartyMode mode)
+        {
             byte[] answer = http.Get("https://api.github.com/repos/" + mod.Repo + "/releases/latest", "application/vnd.github+json", MaxApiBytes);
             object release = Json.Parse(Encoding.UTF8.GetString(answer));
             string tag = Json.Str(release, "tag_name");
@@ -131,27 +127,28 @@ namespace StanniUpdater
             if (latest == null)
             {
                 _warn(mod.Repo + ": release tag '" + tag + "' is not a version, skipping.");
-                return CheckResult.Skipped;
+                return false;
             }
 
-            if (latest <= installedVersion)
+            if (latest <= mod.Installed)
             {
-                _debug(mod.Dll + " " + installedVersion + " is up to date (latest " + latest + ").");
-                return CheckResult.UpToDate;
+                _debug(mod.Label + " " + mod.Installed + " is up to date (latest " + latest + ").");
+                return false;
             }
 
-            Dictionary<string, object> asset = PickAsset(release);
-            if (asset == null)
+            if (mode == ThirdPartyMode.Notify)
             {
-                _warn(mod.Repo + " " + tag + " has no zip file, skipping.");
-                return CheckResult.Skipped;
+                _info("Update available: " + mod.Label + " " + mod.Installed + " -> " + latest + " (" + mod.Repo + "). Set ThirdParty = Update to install it automatically.");
+                return false;
             }
 
-            string url = Json.Str(asset, "browser_download_url");
-            if (!Http.IsAllowedUrl(url) || !url.StartsWith("https://github.com/" + mod.Repo + "/", StringComparison.OrdinalIgnoreCase))
+            Dictionary<string, object> asset = Json.List(release, "assets")?.OfType<Dictionary<string, object>>()
+                .FirstOrDefault(a => (Json.Str(a, "name") ?? "").EndsWith(".zip", StringComparison.OrdinalIgnoreCase));
+            string url = asset == null ? null : Json.Str(asset, "browser_download_url");
+            if (url == null || !Http.IsAllowedUrl(url) || !url.StartsWith("https://github.com/" + mod.Repo + "/", StringComparison.OrdinalIgnoreCase))
             {
-                _warn(mod.Repo + ": the download address of " + tag + " does not point into the repository, skipping.");
-                return CheckResult.Skipped;
+                _warn(mod.Repo + " " + tag + ": no zip inside the repository to download, skipping.");
+                return false;
             }
 
             string digest = Json.Str(asset, "digest");
@@ -159,87 +156,166 @@ namespace StanniUpdater
             if (expected == null && settings.RequireChecksum)
             {
                 _warn(mod.Repo + " " + tag + ": GitHub lists no SHA-256 for the download, skipping (RequireChecksum).");
-                return CheckResult.Skipped;
+                return false;
             }
 
-            _info("Updating " + mod.Dll + " " + installedVersion + " -> " + latest + " ...");
-            byte[] zip = http.Get(url, "application/octet-stream", MaxZipBytes);
+            _info("Updating " + mod.Label + " " + mod.Installed + " -> " + latest + " ...");
+            byte[] zip = http.Get(url, "application/octet-stream", MaxGitHubZipBytes);
             if (expected != null && !string.Equals(Hex(Sha256(zip)), expected, StringComparison.Ordinal))
             {
                 _warn(mod.Repo + " " + tag + ": checksum of the download does not match, not installing.");
-                return CheckResult.Skipped;
+                return false;
             }
 
-            byte[] dll = ExtractDll(zip, mod.Dll);
-            if (dll == null)
+            // Only the DLLs the mod already has are taken from the zip, by file name.
+            using (var archive = new ZipArchive(new MemoryStream(zip), ZipArchiveMode.Read))
             {
-                _warn(mod.Repo + " " + tag + ": " + mod.Dll + " is not in the zip, skipping.");
-                return CheckResult.Skipped;
-            }
-
-            foreach (string file in files)
-            {
-                Replace(file, dll);
-            }
-
-            _info("Updated " + mod.Dll + " to " + latest + (string.Equals(mod.Dll, Path.GetFileName(_selfDll), StringComparison.OrdinalIgnoreCase) ? " (active from the next start)." : "."));
-            return CheckResult.Updated;
-        }
-
-        private List<string> FindInstalled(ModEntry mod)
-        {
-            var files = new List<string>();
-            if (string.Equals(mod.Dll, Path.GetFileName(_selfDll), StringComparison.OrdinalIgnoreCase))
-            {
-                if (File.Exists(_selfDll))
+                var fresh = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
+                foreach (string dll in mod.Dlls)
                 {
-                    files.Add(_selfDll);
+                    string name = Path.GetFileName(dll);
+                    ZipArchiveEntry entry = archive.Entries.FirstOrDefault(e => string.Equals(Path.GetFileName(e.FullName), name, StringComparison.OrdinalIgnoreCase));
+                    byte[] bytes = entry == null ? null : ReadEntry(entry);
+                    if (bytes == null || bytes.Length < 2 || bytes[0] != 'M' || bytes[1] != 'Z')
+                    {
+                        _warn(mod.Repo + " " + tag + ": " + name + " is not in the zip, not installing.");
+                        return false;
+                    }
+
+                    fresh[name] = bytes;
                 }
 
-                return files;
+                foreach (string dll in mod.Dlls)
+                {
+                    ReplaceFile(dll, fresh[Path.GetFileName(dll)]);
+                }
             }
 
-            string plugins = Path.Combine(_bepInExRoot, "plugins");
-            if (Directory.Exists(plugins))
-            {
-                files.AddRange(Directory.GetFiles(plugins, mod.Dll, SearchOption.AllDirectories));
-            }
-
-            return files;
+            _info("Updated " + mod.Label + " to " + latest + " (a loaded plugin keeps running the old version until the next start).");
+            return true;
         }
 
-        private static Dictionary<string, object> PickAsset(object release)
+        private bool CheckThunderstore(Http http, Candidate mod, ThirdPartyMode mode)
         {
-            List<object> assets = Json.List(release, "assets");
-            if (assets == null)
+            byte[] answer = http.Get("https://thunderstore.io/api/experimental/package/" + Uri.EscapeDataString(mod.Namespace) + "/" + Uri.EscapeDataString(mod.Package) + "/",
+                "application/json", MaxApiBytes);
+            object package = Json.Parse(Encoding.UTF8.GetString(answer));
+            object latest = Json.Obj(package, "latest");
+            string fullName = Json.Str(latest, "full_name");
+            string versionText = Json.Str(latest, "version_number");
+            string url = Json.Str(latest, "download_url");
+            if (fullName == null || !fullName.StartsWith(mod.Key + "-", StringComparison.OrdinalIgnoreCase) || !Version.TryParse(versionText, out Version version))
+            {
+                _debug(mod.Key + ": unexpected answer from Thunderstore, skipping.");
+                return false;
+            }
+
+            if (version <= mod.Installed)
+            {
+                _debug(mod.Label + " " + mod.Installed + " is up to date (latest " + version + ").");
+                return false;
+            }
+
+            if (mode == ThirdPartyMode.Notify)
+            {
+                _info("Update available: " + mod.Label + " " + mod.Installed + " -> " + version + " (Thunderstore " + mod.Key + "). Set ThirdParty = Update to install it automatically.");
+                return false;
+            }
+
+            if (url == null || !Http.IsAllowedUrl(url) || !url.StartsWith("https://thunderstore.io/package/download/", StringComparison.OrdinalIgnoreCase))
+            {
+                _warn(mod.Key + ": no usable download address, skipping.");
+                return false;
+            }
+
+            _info("Updating " + mod.Label + " " + mod.Installed + " -> " + version + " (Thunderstore) ...");
+            byte[] zip = http.Get(url, "application/zip", MaxStoreZipBytes);
+            InstallPackage(mod.Folder, zip);
+            _info("Updated " + mod.Label + " to " + version + ". Check that the other mods and the server still match.");
+            return true;
+        }
+
+        /// <summary>
+        /// Writes the files of a Thunderstore package into the mod folder. Everything is checked first,
+        /// so a broken zip changes nothing. Files that belong elsewhere (config, patchers, ...) are never touched.
+        /// </summary>
+        private void InstallPackage(string folder, byte[] zip)
+        {
+            string root = Path.GetFullPath(folder).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            var files = new List<KeyValuePair<string, byte[]>>();
+            long total = 0;
+            using (var archive = new ZipArchive(new MemoryStream(zip), ZipArchiveMode.Read))
+            {
+                foreach (ZipArchiveEntry entry in archive.Entries)
+                {
+                    string path = entry.FullName.Replace('\\', '/');
+                    if (path.EndsWith("/") || string.IsNullOrEmpty(entry.Name))
+                    {
+                        continue;
+                    }
+
+                    if (path.StartsWith("plugins/", StringComparison.OrdinalIgnoreCase))
+                    {
+                        path = path.Substring("plugins/".Length);
+                    }
+                    else if (OtherTargets.Any(t => path.StartsWith(t, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        _debug("Skipping " + path + " (not part of the mod folder).");
+                        continue;
+                    }
+
+                    if (SkippedFiles.Contains(path.ToLowerInvariant()))
+                    {
+                        continue;
+                    }
+
+                    string target = Path.GetFullPath(Path.Combine(folder, path));
+                    if (path.Split('/').Contains("..") || !target.StartsWith(root, StringComparison.Ordinal))
+                    {
+                        throw new InvalidDataException("The package contains an unsafe path: " + entry.FullName);
+                    }
+
+                    byte[] bytes = ReadEntry(entry);
+                    if (bytes == null)
+                    {
+                        throw new InvalidDataException("A file in the package is empty or too large: " + entry.FullName);
+                    }
+
+                    total += bytes.Length;
+                    if (total > MaxStoreZipBytes * 2L)
+                    {
+                        throw new InvalidDataException("The package is unreasonably large.");
+                    }
+
+                    files.Add(new KeyValuePair<string, byte[]>(target, bytes));
+                }
+            }
+
+            if (!files.Any(f => f.Key.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new InvalidDataException("The package contains no DLL.");
+            }
+
+            // manifest.json goes last: it is what tells the next start which version is installed.
+            foreach (KeyValuePair<string, byte[]> file in files.OrderBy(f => Path.GetFileName(f.Key) == "manifest.json" ? 1 : 0))
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(file.Key));
+                ReplaceFile(file.Key, file.Value);
+            }
+        }
+
+        private static byte[] ReadEntry(ZipArchiveEntry entry)
+        {
+            if (entry.Length == 0 || entry.Length > MaxFileBytes)
             {
                 return null;
             }
 
-            return assets.OfType<Dictionary<string, object>>()
-                .FirstOrDefault(a => (Json.Str(a, "name") ?? "").EndsWith(".zip", StringComparison.OrdinalIgnoreCase));
-        }
-
-        private static byte[] ExtractDll(byte[] zip, string dllName)
-        {
-            using (var archive = new ZipArchive(new MemoryStream(zip), ZipArchiveMode.Read))
+            using (Stream stream = entry.Open())
+            using (var buffer = new MemoryStream())
             {
-                // Only the DLL itself is taken, by file name. Nothing else in the zip is ever written to disk.
-                ZipArchiveEntry entry = archive.Entries.FirstOrDefault(e =>
-                    string.Equals(Path.GetFileName(e.FullName), dllName, StringComparison.OrdinalIgnoreCase));
-                if (entry == null || entry.Length == 0 || entry.Length > MaxDllBytes)
-                {
-                    return null;
-                }
-
-                using (Stream stream = entry.Open())
-                using (var buffer = new MemoryStream())
-                {
-                    stream.CopyTo(buffer);
-                    byte[] bytes = buffer.ToArray();
-                    // Windows executables start with "MZ".
-                    return bytes.Length > 2 && bytes[0] == 'M' && bytes[1] == 'Z' ? bytes : null;
-                }
+                stream.CopyTo(buffer);
+                return buffer.ToArray();
             }
         }
 
@@ -247,26 +323,39 @@ namespace StanniUpdater
         /// Swaps the file by renaming: the old one becomes .old, which also works for a DLL that is loaded right now
         /// (Windows allows renaming but not overwriting a loaded file). Puts the old one back if anything fails.
         /// </summary>
-        private void Replace(string path, byte[] content)
+        private static void ReplaceFile(string path, byte[] content)
         {
             string fresh = path + ".new";
             string old = path + ".old";
+            bool keepOld = path.EndsWith(".dll", StringComparison.OrdinalIgnoreCase);   // one step back for DLLs only
             File.WriteAllBytes(fresh, content);
             try
             {
-                if (File.Exists(old))
+                if (File.Exists(path) && !keepOld)
                 {
-                    File.Delete(old);
+                    File.Delete(path);
+                }
+                else if (File.Exists(path))
+                {
+                    if (File.Exists(old))
+                    {
+                        File.Delete(old);
+                    }
+
+                    File.Move(path, old);
                 }
 
-                File.Move(path, old);
                 try
                 {
                     File.Move(fresh, path);
                 }
                 catch (Exception)
                 {
-                    File.Move(old, path);
+                    if (File.Exists(old))
+                    {
+                        File.Move(old, path);
+                    }
+
                     throw;
                 }
             }
@@ -279,29 +368,10 @@ namespace StanniUpdater
             }
         }
 
-        private static Version ReadVersion(string path)
-        {
-            try
-            {
-                Version v = AssemblyName.GetAssemblyName(path).Version;
-                return v == null ? null : new Version(v.Major, Math.Max(0, v.Minor), Math.Max(0, v.Build), Math.Max(0, v.Revision));
-            }
-            catch (Exception)
-            {
-                return null;
-            }
-        }
-
         /// <summary>Accepts tags like v1.2.0, 1.2 or V1.2.3.4. Anything else (nightly, test) is ignored.</summary>
         internal static Version ParseTag(string tag)
         {
-            if (string.IsNullOrEmpty(tag))
-            {
-                return null;
-            }
-
-            string text = tag.TrimStart('v', 'V');
-            if (!Version.TryParse(text, out Version version))
+            if (string.IsNullOrEmpty(tag) || !Version.TryParse(tag.TrimStart('v', 'V'), out Version version))
             {
                 return null;
             }

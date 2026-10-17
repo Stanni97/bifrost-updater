@@ -50,7 +50,7 @@ namespace StanniUpdater
             }
 
             string host = uri.Host.ToLowerInvariant();
-            return host == "api.github.com" || host == "github.com";
+            return host == "api.github.com" || host == "github.com" || host == "thunderstore.io";
         }
 
         /// <summary>Returns the response body, or throws if neither HttpWebRequest nor curl got it.</summary>
