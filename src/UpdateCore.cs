@@ -24,17 +24,26 @@ namespace BifrostUpdater
         private static readonly string[] OtherTargets = { "patchers/", "monomod/", "core/", "config/" };
         private static readonly string[] SkippedFiles = { "readme.md", "changelog.md", "icon.png", "license", "license.md", "license.txt" };
 
+        // lloesche/valheim-server copies /config/bepinex/{plugins,patchers} into the game at every start
+        // and leaves this file behind as the record of what it copied.
+        private const string ServerImageSyncMarker = ".synced_from_config";
+        private const string ServerImageConfigRoot = "/config/bepinex";
+
         private readonly string _bepInExRoot;
         private readonly string[] _defaultTrusted;
+        private readonly bool _isServer;
         private readonly Action<string> _info;
         private readonly Action<string> _warn;
         private readonly Action<string> _debug;
+        private string _mirrorRoot;
 
         /// <param name="defaultTrusted">Owners whose mods are updated by default, normally the owner of the updater itself.</param>
-        public UpdateCore(string bepInExRoot, IEnumerable<string> defaultTrusted, Action<string> info, Action<string> warn, Action<string> debug)
+        /// <param name="isServer">Running on a dedicated server: uses ServerCheckIntervalHours.</param>
+        public UpdateCore(string bepInExRoot, IEnumerable<string> defaultTrusted, bool isServer, Action<string> info, Action<string> warn, Action<string> debug)
         {
             _bepInExRoot = bepInExRoot;
             _defaultTrusted = defaultTrusted.ToArray();
+            _isServer = isServer;
             _info = info;
             _warn = warn;
             _debug = debug;
@@ -73,6 +82,13 @@ namespace BifrostUpdater
             {
                 _debug("Disabled in the config.");
                 return 0;
+            }
+
+            _mirrorRoot = ResolveMirror(settings.MirrorTo);
+            if (_isServer)
+            {
+                _info("Dedicated server: checking " + (settings.ServerCheckIntervalHours == 0 ? "at every start" : "every " + settings.ServerCheckIntervalHours + " h")
+                      + (_mirrorRoot == null ? "." : ", updates also go to " + _mirrorRoot + "."));
             }
 
             if (!force && !CheckDue(settings))
@@ -312,7 +328,9 @@ namespace BifrostUpdater
                 }
             }
 
-            _info("Updated " + mod.Label + " to " + latest + " (a loaded plugin keeps running the old version until the next start).");
+            _info("Updated " + mod.Label + " to " + latest + (IsPatcher(mod.Folder)
+                ? " (patchers are already loaded, the new version runs from the next start)."
+                : ", already in use in this start."));
             return true;
         }
 
@@ -441,10 +459,105 @@ namespace BifrostUpdater
         }
 
         /// <summary>
+        /// The BepInEx folder that is copied over this one at every start, or null. Without writing updates there too,
+        /// the copy would put the old version back at the next start.
+        /// </summary>
+        private string ResolveMirror(string setting)
+        {
+            string value = (setting ?? "").Trim();
+            bool auto = value.Equals("auto", StringComparison.OrdinalIgnoreCase);
+            if (value.Length == 0 || value.Equals("off", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            if (auto && !File.Exists(Path.Combine(_bepInExRoot, ServerImageSyncMarker)))
+            {
+                return null;
+            }
+
+            try
+            {
+                string full = Path.GetFullPath(auto ? ServerImageConfigRoot : value).TrimEnd(Path.DirectorySeparatorChar);
+                string own = Path.GetFullPath(_bepInExRoot).TrimEnd(Path.DirectorySeparatorChar);
+                if (Directory.Exists(full) && !string.Equals(full, own, StringComparison.Ordinal))
+                {
+                    return full;
+                }
+
+                if (!auto)
+                {
+                    _warn("MirrorTo = " + value + " is not a usable folder, updates are only written into the game.");
+                }
+            }
+            catch (Exception e)
+            {
+                _warn("MirrorTo = " + value + ": " + e.Message);
+            }
+
+            return null;
+        }
+
+        private bool IsPatcher(string folder)
+        {
+            string root = Path.GetFullPath(Path.Combine(_bepInExRoot, "patchers")).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            return (Path.GetFullPath(folder) + Path.DirectorySeparatorChar).StartsWith(root, StringComparison.Ordinal);
+        }
+
+        /// <summary>Replaces the file in the game and, if the mod came from the mirror folder, there as well.</summary>
+        private void ReplaceFile(string path, byte[] content)
+        {
+            ReplaceInPlace(path, content);
+            if (_mirrorRoot == null)
+            {
+                return;
+            }
+
+            string root = Path.GetFullPath(_bepInExRoot).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            string full = Path.GetFullPath(path);
+            if (!full.StartsWith(root, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            string relative = full.Substring(root.Length);
+            string top = relative.Split(Path.DirectorySeparatorChar)[0];
+            if (top != "plugins" && top != "patchers")
+            {
+                return;
+            }
+
+            string target = Path.Combine(_mirrorRoot, relative);
+            if (!Directory.Exists(Path.GetDirectoryName(target)))
+            {
+                // The mod was not installed through the mirror folder, so nothing there would undo the update.
+                _debug(relative + ": not in " + _mirrorRoot + ", nothing to mirror.");
+                return;
+            }
+
+            try
+            {
+                string fresh = target + ".new";
+                File.WriteAllBytes(fresh, content);
+                if (File.Exists(target))
+                {
+                    File.Delete(target);
+                }
+
+                File.Move(fresh, target);
+                _debug("Mirrored " + relative + " to " + _mirrorRoot + ".");
+            }
+            catch (Exception e)
+            {
+                _warn("Could not write the update to " + target + ", the next start may bring back the old version: " + e.Message);
+            }
+        }
+
+        /// <summary>
         /// Swaps the file by renaming: the old one becomes .old, which also works for a DLL that is loaded right now
         /// (Windows allows renaming but not overwriting a loaded file). Puts the old one back if anything fails.
         /// </summary>
-        private static void ReplaceFile(string path, byte[] content)
+        private static void ReplaceInPlace(string path, byte[] content)
         {
             string fresh = path + ".new";
             string old = path + ".old";
@@ -510,8 +623,9 @@ namespace BifrostUpdater
                 return false;
             }
 
-            if (settings.CheckIntervalHours > 0 && state.TryGetValue("lastcheck", out string check) && long.TryParse(check, out long checkTicks)
-                && now - new DateTime(checkTicks, DateTimeKind.Utc) < TimeSpan.FromHours(settings.CheckIntervalHours))
+            int interval = _isServer ? settings.ServerCheckIntervalHours : settings.CheckIntervalHours;
+            if (interval > 0 && state.TryGetValue("lastcheck", out string check) && long.TryParse(check, out long checkTicks)
+                && now - new DateTime(checkTicks, DateTimeKind.Utc) < TimeSpan.FromHours(interval))
             {
                 return false;
             }

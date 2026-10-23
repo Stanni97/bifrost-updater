@@ -83,7 +83,11 @@ Auf dem Steam Deck (Desktop-Modus) gilt dasselbe wie bei Linux oder Proton, je n
 
 ### Dedizierter Server
 
-Die Datei kommt auf dem Server in `BepInEx/patchers/BifrostUpdater/`. Auf dem Server solltest du `ThirdParty = Update` nicht einschalten. Die meisten Mods brauchen auf Server und Clients dieselbe Version, und ein Update im laufenden Betrieb wirkt erst beim nächsten Neustart (siehe [Konfiguration](#konfiguration)).
+Die Datei kommt auf dem Server in `BepInEx/patchers/BifrostUpdater/`. Der Updater erkennt den Server selbst (`valheim_server` oder `-batchmode -nographics`) und prüft dort bei **jedem Start** (`ServerCheckIntervalHours = 0`). So läuft der Server mit denselben Versionen, die die Updater der Spieler installieren.
+
+**Docker (lloesche/valheim-server):** Das Image kopiert bei jedem Start `/config/bepinex/plugins` und `patchers` ins Spiel. Der Updater erkennt das und schreibt ein Update auch dorthin (`MirrorTo = auto`). Ohne das würde der nächste Start die alte Version zurückbringen. Den Updater selbst legst du nach `/config/bepinex/patchers/BifrostUpdater/`.
+
+Auf dem Server solltest du `ThirdParty = Update` nicht einschalten. Fremde Mods brauchen meist auf Server und Clients dieselbe Version, und die Spieler bekommen sie nicht automatisch.
 
 ### Funktioniert es?
 
@@ -113,12 +117,14 @@ Es ist keine Konfiguration nötig. Nach dem ersten Start liegt `BepInEx/config/b
 | --- | --- |
 | `Enabled` | `false` schaltet den Updater aus |
 | `CheckIntervalHours` | Mindestabstand zwischen zwei Prüfungen, `0` = bei jedem Start |
+| `ServerCheckIntervalHours` | Dasselbe auf einem dedizierten Server, Standard `0` (bei jedem Start) |
 | `TimeoutSeconds` | Wie lange eine Anfrage dauern darf |
 | `Trusted` | GitHub-Nutzer und Thunderstore-Teams (oder einzelne `Owner/Repo`, `Owner-Name`), deren Mods ohne Rückfrage aktualisiert werden. Standard: der Besitzer des Updaters |
 | `ThirdParty` | Was bei Updates aller anderen Mods passiert: `Off` (ignorieren), `Notify` (nur ins Log schreiben, Standard) oder `Update` (installieren) |
 | `RequireChecksum` | GitHub-Downloads nur installieren, wenn die SHA-256-Prüfsumme zu GitHubs Angabe passt (Standard `true`) |
 | `Disable` | Mods, die nie angefasst werden, kommagetrennt: Ordnername, `Owner/Repo` oder `Owner-Name` |
 | `Mod` | Optional, mehrfach möglich: `Owner/Repo:Datei.dll` legt die Quelle einer Mod fest |
+| `MirrorTo` | BepInEx-Ordner, der bei jedem Start ins Spiel kopiert wird (Server-Images). Updates werden auch dorthin geschrieben. `auto` (Standard, erkennt lloesche/valheim-server), `off` oder ein Pfad |
 
 **Vorsicht mit `ThirdParty = Update` im Multiplayer:** Die meisten Mods brauchen auf Client und Server dieselbe Version. Aktualisiert nur dein Client, kommst du nicht mehr auf den Server. Der Updater prüft auch keine Abhängigkeiten, ein Update kann also eine neuere Version von Jotunn oder BepInEx verlangen.
 

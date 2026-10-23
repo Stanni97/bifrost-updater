@@ -34,6 +34,29 @@ namespace BifrostUpdater
             return new string[0];
         }
 
+        /// <summary>
+        /// Dedicated servers run as a separate executable (valheim_server, for example) or headless.
+        /// UnityEngine is not loaded yet in the preloader, so the process name and command line have to tell.
+        /// </summary>
+        private static bool IsDedicatedServer()
+        {
+            try
+            {
+                if ((Paths.ProcessName ?? "").IndexOf("server", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    return true;
+                }
+
+                string[] args = Environment.GetCommandLineArgs();
+                return Array.Exists(args, a => string.Equals(a, "-batchmode", StringComparison.OrdinalIgnoreCase))
+                    && Array.Exists(args, a => string.Equals(a, "-nographics", StringComparison.OrdinalIgnoreCase));
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+
         public static void Initialize()
         {
             ManualLogSource log = Logger.CreateLogSource("BifrostUpdater");
@@ -42,6 +65,7 @@ namespace BifrostUpdater
                 var core = new UpdateCore(
                     Paths.BepInExRootPath,
                     OwnOwner(),
+                    IsDedicatedServer(),
                     message => log.LogInfo(message),
                     message => log.LogWarning(message),
                     message => log.LogDebug(message));

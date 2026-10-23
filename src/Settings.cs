@@ -21,6 +21,8 @@ namespace BifrostUpdater
     {
         public bool Enabled = true;
         public int CheckIntervalHours = 6;
+        public int ServerCheckIntervalHours = 0;
+        public string MirrorTo = "auto";
         public int TimeoutSeconds = 6;
         public bool RequireChecksum = true;
         public ThirdPartyMode ThirdParty = ThirdPartyMode.Notify;
@@ -37,6 +39,8 @@ namespace BifrostUpdater
             "#\n" +
             "# Enabled            = false turns the updater off completely.\n" +
             "# CheckIntervalHours = how often the servers are asked at most (0 = at every start).\n" +
+            "# ServerCheckIntervalHours = the same on a dedicated server. Default 0: a server should start with the\n" +
+            "#                      versions the players' updaters just installed.\n" +
             "# TimeoutSeconds     = how long one request may take before it is given up.\n" +
             "# Trusted            = GitHub users / Thunderstore teams (or single Owner/Repo, Owner-Name) whose mods are updated\n" +
             "#                      without asking, comma separated. Default: the owner of Bifrost Updater itself.\n" +
@@ -45,7 +49,10 @@ namespace BifrostUpdater
             "#                      Careful with Update in multiplayer: most mods need the same version on client and server.\n" +
             "# RequireChecksum    = only install a GitHub download whose SHA-256 matches the one GitHub lists for it.\n" +
             "# Disable            = mods never to touch, comma separated: folder name, Owner/Repo or Owner-Name.\n" +
-            "# Mod                = optional, can be repeated: Owner/Repo:File.dll tells where a mod's updates come from.\n\n";
+            "# Mod                = optional, can be repeated: Owner/Repo:File.dll tells where a mod's updates come from.\n" +
+            "# MirrorTo           = a BepInEx folder whose plugins and patchers are copied into this one at every start\n" +
+            "#                      (server images do that). Updates are written there too, so they are not undone.\n" +
+            "#                      auto = detect it (lloesche/valheim-server: /config/bepinex), off = never, or a path.\n\n";
 
         public static Settings Load(string path, IEnumerable<string> defaultTrusted, Action<string> warn)
         {
@@ -57,8 +64,8 @@ namespace BifrostUpdater
                 {
                     Directory.CreateDirectory(Path.GetDirectoryName(path));
                     File.WriteAllText(path, (Header
-                        + "Enabled = true\nCheckIntervalHours = 6\nTimeoutSeconds = 6\nTrusted = " + string.Join(", ", settings.Trusted.ToArray()) + "\n"
-                        + "ThirdParty = Notify\nRequireChecksum = true\nDisable =\n").Replace("\n", Environment.NewLine));
+                        + "Enabled = true\nCheckIntervalHours = 6\nServerCheckIntervalHours = 0\nTimeoutSeconds = 6\nTrusted = " + string.Join(", ", settings.Trusted.ToArray()) + "\n"
+                        + "ThirdParty = Notify\nRequireChecksum = true\nDisable =\nMirrorTo = auto\n").Replace("\n", Environment.NewLine));
                 }
                 catch (Exception e)
                 {
@@ -83,6 +90,8 @@ namespace BifrostUpdater
                 {
                     case "enabled": settings.Enabled = ParseBool(value, true); break;
                     case "checkintervalhours": settings.CheckIntervalHours = ParseInt(value, 6); break;
+                    case "servercheckintervalhours": settings.ServerCheckIntervalHours = ParseInt(value, 0); break;
+                    case "mirrorto": settings.MirrorTo = value; break;
                     case "timeoutseconds": settings.TimeoutSeconds = ParseInt(value, 6); break;
                     case "requirechecksum": settings.RequireChecksum = ParseBool(value, true); break;
                     case "trusted": case "trustedowners": case "allowedowners": settings.Trusted = Split(value); break;
