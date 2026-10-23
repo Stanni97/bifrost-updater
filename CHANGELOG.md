@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.2.0
+
+- Neu: Dateien vom eigenen Spielserver (`FileSource`). Ein Server kann Config-Dateien anbieten, die eine Mod braucht, aber nicht mitliefert (z. B. den Ruf von Kong Strong). Der Updater installiert sie nach `BepInEx/config`, wenn der Spieler sie noch nicht hat.
+- Eine eigene Datei des Spielers wird nie ersetzt. Eine Datei, die der Updater selbst installiert hat und die seitdem unverändert ist, folgt Änderungen auf dem Server.
+- Sicherheit: Jede Datei wird mit der SHA-256-Prüfsumme aus der Liste des Servers verglichen. Es werden nur Dateien unter `BepInEx/config` geschrieben und nie Programme (`.dll`, `.exe`, Skripte), auch weil die Quelle reines http sein darf.
+- Mehrere Adressen sind möglich (z. B. LAN und VPN), die erste erreichbare zählt. Eine nicht erreichbare Quelle kostet höchstens 3 Sekunden.
+
 ## 1.1.0
 
 - Dedizierte Server werden erkannt (`valheim_server` oder `-batchmode -nographics`). Dort gilt der neue Schlüssel `ServerCheckIntervalHours`, Standard `0`: Der Server prüft bei jedem Start und startet so mit den Versionen, die die Updater der Spieler gerade installiert haben.

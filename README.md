@@ -109,6 +109,23 @@ Die Datei `BepInEx/patchers/BifrostUpdater/BifrostUpdater.dll` löschen, optiona
 | Mod wird nie aktualisiert | Das Release muss einen Versions-Tag wie `v1.2.0` haben und die DLL im Zip enthalten, siehe [Eigene Mods anschließen](#eigene-mods-anschließen). Die Mod muss einem vertrauten Besitzer gehören (`Trusted`), sonst meldet der Updater nur |
 | Updater ganz aus | `Enabled = false` in `bifrost.updater.cfg` |
 
+## Dateien vom Spielserver
+
+Manche Mods brauchen Dateien, die sie nicht mitliefern dürfen, zum Beispiel einen eigenen Sound. Der Spielserver
+kann sie anbieten, und der Updater holt sie beim Spielstart:
+
+```
+FileSource = http://192.168.178.83:8457, http://100.74.56.53:8457
+```
+
+- Der Server liefert unter `/bifrost/manifest.json` eine Liste `{"files": [{"path": "config/...", "sha256": "..."}]}`
+  und unter `/bifrost/files/<path>` die Dateien.
+- Installiert wird nur, was **unter `BepInEx/config`** landet und **kein Programm** ist. Jede Datei muss zur Prüfsumme passen.
+- Hast du die Datei schon (eigene Version), bleibt sie unverändert. Hat der Updater sie installiert und du hast
+  nichts daran geändert, kommt eine neue Version vom Server automatisch nach.
+- Mehrere Adressen werden der Reihe nach probiert. Ist keine erreichbar (z. B. unterwegs), geht es nach höchstens
+  3 Sekunden pro Adresse weiter.
+
 ## Konfiguration
 
 Es ist keine Konfiguration nötig. Nach dem ersten Start liegt `BepInEx/config/bifrost.updater.cfg` mit den Standardwerten und Erklärungen bereit:
@@ -124,6 +141,7 @@ Es ist keine Konfiguration nötig. Nach dem ersten Start liegt `BepInEx/config/b
 | `RequireChecksum` | GitHub-Downloads nur installieren, wenn die SHA-256-Prüfsumme zu GitHubs Angabe passt (Standard `true`) |
 | `Disable` | Mods, die nie angefasst werden, kommagetrennt: Ordnername, `Owner/Repo` oder `Owner-Name` |
 | `Mod` | Optional, mehrfach möglich: `Owner/Repo:Datei.dll` legt die Quelle einer Mod fest |
+| `FileSource` | Adressen des Datei-Angebots deines Spielservers, kommagetrennt, siehe [Dateien vom Spielserver](#dateien-vom-spielserver) |
 | `MirrorTo` | BepInEx-Ordner, der bei jedem Start ins Spiel kopiert wird (Server-Images). Updates werden auch dorthin geschrieben. `auto` (Standard, erkennt lloesche/valheim-server), `off` oder ein Pfad |
 
 **Vorsicht mit `ThirdParty = Update` im Multiplayer:** Die meisten Mods brauchen auf Client und Server dieselbe Version. Aktualisiert nur dein Client, kommst du nicht mehr auf den Server. Der Updater prüft auch keine Abhängigkeiten, ein Update kann also eine neuere Version von Jotunn oder BepInEx verlangen.

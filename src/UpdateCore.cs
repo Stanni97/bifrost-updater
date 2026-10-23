@@ -19,6 +19,12 @@ namespace BifrostUpdater
         private const int MaxStoreZipBytes = 100 * 1024 * 1024;
         private const int MaxFileBytes = 60 * 1024 * 1024;
         private const int OfflineBackoffMinutes = 10;
+        private const int MaxSharedFileBytes = 20 * 1024 * 1024;
+        private const int FileSourceTimeoutSeconds = 3;
+
+        // A FileSource may be plain http, so it must never be able to deliver anything that runs.
+        private static readonly string[] BlockedFileTypes =
+            { ".dll", ".exe", ".so", ".dylib", ".sh", ".bat", ".cmd", ".ps1", ".py", ".js", ".vbs", ".jar", ".com", ".msi" };
 
         // Parts of a Thunderstore package that are not part of the mod folder itself.
         private static readonly string[] OtherTargets = { "patchers/", "monomod/", "core/", "config/" };
@@ -97,6 +103,9 @@ namespace BifrostUpdater
                 return 0;
             }
 
+            // Before the mods, so an unreachable GitHub does not keep the files back.
+            SyncFiles(settings);
+
             DiscoveryResult found = Discovery.Find(_bepInExRoot, settings.Sources, _debug);
             var http = new Http(settings.TimeoutSeconds, _debug);
             try
@@ -150,6 +159,104 @@ namespace BifrostUpdater
 
             WriteState("lastcheck", DateTime.UtcNow);
             return updated;
+        }
+
+        /// <summary>
+        /// Installs the config files a game server shares (FileSource), e.g. a sound a mod needs but does not ship.
+        /// A file the player already has is never replaced, unless this updater installed it and it was not changed since:
+        /// then it follows the server's version. Sources are alternatives (LAN, VPN, domain); the first that answers is used.
+        /// </summary>
+        private void SyncFiles(Settings settings)
+        {
+            if (settings.FileSources.Count == 0)
+            {
+                return;
+            }
+
+            var http = new Http(Math.Min(settings.TimeoutSeconds, FileSourceTimeoutSeconds), _debug);
+            foreach (string source in settings.FileSources)
+            {
+                string baseUrl = source.TrimEnd('/');
+                List<object> files;
+                try
+                {
+                    byte[] answer = http.GetFromFileSource(baseUrl + "/bifrost/manifest.json", "application/json", MaxApiBytes);
+                    files = Json.List(Json.Parse(Encoding.UTF8.GetString(answer)), "files");
+                }
+                catch (Exception e)
+                {
+                    _debug("File source " + baseUrl + " not reachable: " + e.Message);
+                    continue;
+                }
+
+                foreach (Dictionary<string, object> file in (files ?? new List<object>()).OfType<Dictionary<string, object>>())
+                {
+                    try
+                    {
+                        SyncFile(http, baseUrl, Json.Str(file, "path"), (Json.Str(file, "sha256") ?? "").ToLowerInvariant());
+                    }
+                    catch (Exception e)
+                    {
+                        _warn("Shared file " + Json.Str(file, "path") + " from " + baseUrl + ": " + e.Message);
+                    }
+                }
+
+                return;
+            }
+
+            _debug("No file source reachable, shared files are checked at the next start.");
+        }
+
+        private void SyncFile(Http http, string baseUrl, string path, string sha256)
+        {
+            if (string.IsNullOrEmpty(path) || sha256.Length != 64 || !sha256.All(c => (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
+            {
+                throw new InvalidDataException("incomplete entry in the manifest");
+            }
+
+            string[] parts = path.Split('/');
+            if (parts.Length < 2 || parts[0] != "config" || parts.Any(p => p.Length == 0 || p == "." || p == ".." || p.Contains("\\") || p.Contains(":"))
+                || BlockedFileTypes.Any(t => path.EndsWith(t, StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new InvalidDataException("not allowed: only data files below config/ are installed");
+            }
+
+            string configRoot = Path.GetFullPath(Path.Combine(_bepInExRoot, "config")).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            string target = Path.GetFullPath(Path.Combine(_bepInExRoot, string.Join(Path.DirectorySeparatorChar.ToString(), parts)));
+            if (!target.StartsWith(configRoot, StringComparison.Ordinal))
+            {
+                throw new InvalidDataException("path leaves BepInEx/config");
+            }
+
+            string stateKey = "file:" + path;
+            if (File.Exists(target))
+            {
+                string local = Hex(Sha256(File.ReadAllBytes(target)));
+                if (local == sha256)
+                {
+                    WriteStateValue(stateKey, sha256);
+                    return;
+                }
+
+                if (!ReadState().TryGetValue(stateKey, out string installed) || installed != local)
+                {
+                    _debug(path + ": you have your own version, keeping it.");
+                    return;
+                }
+            }
+
+            string url = baseUrl + "/bifrost/files/" + string.Join("/", parts.Select(Uri.EscapeDataString).ToArray());
+            byte[] content = http.GetFromFileSource(url, "application/octet-stream", MaxSharedFileBytes);
+            if (Hex(Sha256(content)) != sha256)
+            {
+                throw new InvalidDataException("checksum does not match the manifest, not installed");
+            }
+
+            bool update = File.Exists(target);
+            Directory.CreateDirectory(Path.GetDirectoryName(target));
+            ReplaceInPlace(target, content);
+            WriteStateValue(stateKey, sha256);
+            _info((update ? "Updated " : "Installed ") + "BepInEx/" + path + " from " + baseUrl + ".");
         }
 
         /// <summary>
@@ -660,10 +767,20 @@ namespace BifrostUpdater
 
         private void WriteState(string key, DateTime value)
         {
+            WriteStateValue(key, value.Ticks.ToString());
+        }
+
+        private void WriteStateValue(string key, string value)
+        {
             try
             {
                 Dictionary<string, string> state = ReadState();
-                state[key] = value.Ticks.ToString();
+                if (state.TryGetValue(key, out string old) && old == value)
+                {
+                    return;
+                }
+
+                state[key] = value;
                 if (key == "lastcheck")
                 {
                     state.Remove("lastfail");

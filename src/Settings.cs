@@ -23,6 +23,9 @@ namespace BifrostUpdater
         public int CheckIntervalHours = 6;
         public int ServerCheckIntervalHours = 0;
         public string MirrorTo = "auto";
+
+        /// <summary>Game servers that share config files (e.g. a shout sound), tried in this order.</summary>
+        public List<string> FileSources = new List<string>();
         public int TimeoutSeconds = 6;
         public bool RequireChecksum = true;
         public ThirdPartyMode ThirdParty = ThirdPartyMode.Notify;
@@ -52,7 +55,11 @@ namespace BifrostUpdater
             "# Mod                = optional, can be repeated: Owner/Repo:File.dll tells where a mod's updates come from.\n" +
             "# MirrorTo           = a BepInEx folder whose plugins and patchers are copied into this one at every start\n" +
             "#                      (server images do that). Updates are written there too, so they are not undone.\n" +
-            "#                      auto = detect it (lloesche/valheim-server: /config/bepinex), off = never, or a path.\n\n";
+            "#                      auto = detect it (lloesche/valheim-server: /config/bepinex), off = never, or a path.\n" +
+            "# FileSource         = addresses of your game server's file share, comma separated, tried in order\n" +
+            "#                      (e.g. http://192.168.178.83:8457, http://100.74.56.53:8457). Config files offered there\n" +
+            "#                      are installed into BepInEx/config if you don't have them. Your own files are never\n" +
+            "#                      replaced; files it installed itself follow updates on the server. Never programs.\n\n";
 
         public static Settings Load(string path, IEnumerable<string> defaultTrusted, Action<string> warn)
         {
@@ -65,7 +72,7 @@ namespace BifrostUpdater
                     Directory.CreateDirectory(Path.GetDirectoryName(path));
                     File.WriteAllText(path, (Header
                         + "Enabled = true\nCheckIntervalHours = 6\nServerCheckIntervalHours = 0\nTimeoutSeconds = 6\nTrusted = " + string.Join(", ", settings.Trusted.ToArray()) + "\n"
-                        + "ThirdParty = Notify\nRequireChecksum = true\nDisable =\nMirrorTo = auto\n").Replace("\n", Environment.NewLine));
+                        + "ThirdParty = Notify\nRequireChecksum = true\nDisable =\nMirrorTo = auto\nFileSource =\n").Replace("\n", Environment.NewLine));
                 }
                 catch (Exception e)
                 {
@@ -92,6 +99,7 @@ namespace BifrostUpdater
                     case "checkintervalhours": settings.CheckIntervalHours = ParseInt(value, 6); break;
                     case "servercheckintervalhours": settings.ServerCheckIntervalHours = ParseInt(value, 0); break;
                     case "mirrorto": settings.MirrorTo = value; break;
+                    case "filesource": case "filesources": settings.FileSources = Split(value); break;
                     case "timeoutseconds": settings.TimeoutSeconds = ParseInt(value, 6); break;
                     case "requirechecksum": settings.RequireChecksum = ParseBool(value, true); break;
                     case "trusted": case "trustedowners": case "allowedowners": settings.Trusted = Split(value); break;

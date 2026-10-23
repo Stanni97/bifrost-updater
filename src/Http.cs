@@ -53,6 +53,47 @@ namespace BifrostUpdater
             return host == "api.github.com" || host == "github.com" || host == "thunderstore.io";
         }
 
+        /// <summary>
+        /// Downloads from a FileSource the player configured (their game server, http or https). No redirects, and only
+        /// HttpWebRequest: plain http has none of the certificate problems curl solves, and a home server that is out
+        /// of reach must not hold up the game start with two more tries.
+        /// </summary>
+        public byte[] GetFromFileSource(string url, string accept, int maxBytes)
+        {
+            if (!Uri.TryCreate(url, UriKind.Absolute, out Uri uri) || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+            {
+                throw new InvalidOperationException("Not an http(s) address: " + url);
+            }
+
+            var request = (HttpWebRequest)WebRequest.Create(uri);
+            request.UserAgent = UserAgent;
+            request.Accept = accept;
+            request.Timeout = _timeoutMs;
+            request.ReadWriteTimeout = _timeoutMs;
+            request.AllowAutoRedirect = false;
+            try
+            {
+                using (var response = (HttpWebResponse)request.GetResponse())
+                {
+                    if ((int)response.StatusCode != 200)
+                    {
+                        throw new HttpStatusException((int)response.StatusCode, "HTTP " + (int)response.StatusCode);
+                    }
+
+                    using (Stream stream = response.GetResponseStream())
+                    using (var buffer = new MemoryStream())
+                    {
+                        CopyLimited(stream, buffer, maxBytes);
+                        return buffer.ToArray();
+                    }
+                }
+            }
+            catch (WebException e) when (e.Status == WebExceptionStatus.ProtocolError && e.Response is HttpWebResponse answer)
+            {
+                throw new HttpStatusException((int)answer.StatusCode, "HTTP " + (int)answer.StatusCode + " " + answer.StatusDescription);
+            }
+        }
+
         /// <summary>Returns the response body, or throws if neither HttpWebRequest nor curl got it.</summary>
         public byte[] Get(string url, string accept, int maxBytes)
         {
